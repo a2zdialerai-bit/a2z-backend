@@ -8,8 +8,8 @@ import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from .config import settings
-from .models import Appointment, Workspace
+from config import settings
+from models import Appointment, Workspace
 
 
 GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth"

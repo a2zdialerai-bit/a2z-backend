@@ -5,7 +5,7 @@ from typing import Generator
 
 from sqlmodel import Session, SQLModel, create_engine
 
-from .config import settings
+from config import settings
 
 
 def _sqlite_connect_args(database_url: str) -> dict:

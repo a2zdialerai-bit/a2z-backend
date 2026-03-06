@@ -9,9 +9,9 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlmodel import Session, select
 
-from .config import settings
-from .db import get_session
-from .models import User
+from config import settings
+from db import get_session
+from models import User
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

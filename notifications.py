@@ -6,8 +6,8 @@ from typing import Optional
 from twilio.base.exceptions import TwilioRestException
 from twilio.rest import Client as TwilioClient
 
-from .config import settings
-from .models import Appointment, Workspace
+from config import settings
+from models import Appointment, Workspace
 
 logger = logging.getLogger(__name__)
 

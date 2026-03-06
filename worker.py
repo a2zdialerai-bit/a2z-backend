@@ -6,9 +6,9 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from .config import settings
-from .models import CallLog, Campaign, Lead, Pathway, UsageEvent, Workspace
-from .twilio_voice import place_outbound_call
+from config import settings
+from models import CallLog, Campaign, Lead, Pathway, UsageEvent, Workspace
+from twilio_voice import place_outbound_call
 
 logger = logging.getLogger(__name__)
 

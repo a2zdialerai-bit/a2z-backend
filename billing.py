@@ -7,7 +7,7 @@ try:
 except Exception:  # pragma: no cover
     stripe = None  # type: ignore
 
-from .config import settings
+from config import settings
 
 
 def stripe_enabled() -> bool:

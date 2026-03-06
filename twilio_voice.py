@@ -8,9 +8,9 @@ from urllib.parse import urlencode
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import Connect, Gather, VoiceResponse
 
-from .config import settings
-from .models import Campaign, Lead, Pathway, Workspace
-from .pathway_engine import render_prompt, safe_json_load
+from config import settings
+from models import Campaign, Lead, Pathway, Workspace
+from pathway_engine import render_prompt, safe_json_load
 
 logger = logging.getLogger(__name__)
 

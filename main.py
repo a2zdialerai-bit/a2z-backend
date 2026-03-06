@@ -15,18 +15,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlmodel import Session, func, select
 
-from .auth import authenticate_user, create_access_token, get_current_user, hash_password
-from .billing import construct_webhook_event, create_checkout_session, stripe_enabled
-from .calendar_sync import (
+from auth import authenticate_user, create_access_token, get_current_user, hash_password
+from billing import construct_webhook_event, create_checkout_session, stripe_enabled
+from calendar_sync import (
     create_calendly_placeholder,
     create_google_calendar_event,
     exchange_google_code_for_tokens,
     get_google_oauth_start_url,
 )
-from .classifier import classify_text
-from .config import settings
-from .db import get_session, init_db
-from .models import (
+from classifier import classify_text
+from config import settings
+from db import get_session, init_db
+from models import (
     Appointment,
     AuditLog,
     CallLog,
@@ -39,10 +39,10 @@ from .models import (
     User,
     Workspace,
 )
-from .notifications import send_appointment_confirmation_sms
-from .pathway_engine import safe_json_load, simulate_pathway, validate_pathway_json
-from .realtime_bridge import RealtimeBridge, safe_parse_ws_message
-from .schemas import (
+from notifications import send_appointment_confirmation_sms
+from pathway_engine import safe_json_load, simulate_pathway, validate_pathway_json
+from realtime_bridge import RealtimeBridge, safe_parse_ws_message
+from schemas import (
     AppointmentCreateIn,
     AuthLoginIn,
     AuthRegisterIn,
@@ -57,12 +57,12 @@ from .schemas import (
     PathwayUpdateIn,
     WorkspaceSettingsUpdateIn,
 )
-from .twilio_voice import (
+from twilio_voice import (
     build_initial_context,
     build_voice_response_for_gather,
     build_voice_response_for_realtime_stream,
 )
-from .worker import run_campaign_tick, run_worker_once
+from worker import run_campaign_tick, run_worker_once
 
 load_dotenv()
 
@@ -1370,7 +1370,7 @@ def calls_test(
     session.commit()
     session.refresh(calllog)
 
-    from .twilio_voice import place_outbound_call
+    from twilio_voice import place_outbound_call
     result = place_outbound_call(workspace, lead, campaign, pathway, calllog.id)
 
     if result.get("ok"):
