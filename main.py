@@ -340,7 +340,7 @@ def register(payload: AuthRegisterIn, session: Session = Depends(get_session)) -
     session.commit()
     session.refresh(user)
 
-    token = create_access_token(user)
+    token = create_access_token(user.id)
     return {
         "access_token": token,
         "token_type": "bearer",
