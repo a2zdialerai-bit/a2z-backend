@@ -26,3 +26,9 @@ database.db
 .venv/
 __pycache__/
 .DS_Store
+
+database.db
+.env
+.venv/
+__pycache__/
+.DS_Store
