@@ -32,7 +32,7 @@ def create_access_token(user_id: int, expires_minutes: Optional[int] = None) -> 
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
 
 
 def get_user_by_email(session: Session, email: str) -> Optional[User]:
@@ -68,8 +68,8 @@ def get_current_user(
     try:
         payload = jwt.decode(
             token,
-            settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
+            settings.jwt_secret,
+            algorithms=[settings.jwt_alg],
         )
         user_id_raw = payload.get("sub")
         if user_id_raw is None:
