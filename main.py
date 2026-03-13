@@ -75,7 +75,12 @@ app = FastAPI(title="A2Z Dialer API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=[
+        "https://a2zdialer.com",
+        "https://www.a2zdialer.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -360,7 +365,7 @@ def login(payload: AuthLoginIn, session: Session = Depends(get_session)) -> dict
     session.add(user)
     session.commit()
 
-    token = create_access_token(user)
+    token = create_access_token(user.id)
     return {
         "access_token": token,
         "token_type": "bearer",
