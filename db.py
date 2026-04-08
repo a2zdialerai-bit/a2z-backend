@@ -34,15 +34,19 @@ engine = create_engine(
 
 
 def init_db() -> None:
-    SQLModel.metadata.create_all(engine)
     from sqlalchemy import text
     with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE"))
-        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER DEFAULT 0"))
-        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP"))
-        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE"))
-        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP"))
+        conn.execute(text("DROP TABLE IF EXISTS users CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS workspaces CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS leads CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS campaigns CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS calllogs CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS appointments CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS leadlists CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS pathways CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS dnc CASCADE"))
         conn.commit()
+    SQLModel.metadata.create_all(engine)
 
 
 def get_session() -> Generator[Session, None, None]:
