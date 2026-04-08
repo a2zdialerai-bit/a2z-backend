@@ -34,18 +34,6 @@ engine = create_engine(
 
 
 def init_db() -> None:
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS users CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS workspaces CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS leads CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS campaigns CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS calllogs CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS appointments CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS leadlists CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS pathways CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS dnc CASCADE"))
-        conn.commit()
     SQLModel.metadata.create_all(engine)
 
 
