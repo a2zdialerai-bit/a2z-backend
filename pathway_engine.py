@@ -232,6 +232,78 @@ def extract_fields_from_text(node: dict, reply: str, flags: dict) -> dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Back-channel acknowledgment system
+# ---------------------------------------------------------------------------
+
+BACKCHANNELS: list[str] = ["Mm-hmm.", "Right.", "Yeah.", "Got it.", "Okay.", "Sure."]
+
+
+def get_backchannel_phrase() -> str:
+    """Return a random back-channel acknowledgment phrase."""
+    return random.choice(BACKCHANNELS)
+
+
+def should_send_backchannel(node: dict, speaking_duration_ms: int) -> bool:
+    """Return True if a back-channel filler should be injected before the AI responds.
+
+    Conditions:
+    - Node type is "listen"
+    - Node does not have enable_backchannels: False
+    - Homeowner has been speaking for > 3 seconds
+    - Not an exit/opt-out/end node
+    """
+    if not isinstance(node, dict):
+        return False
+    if node.get("type") != "listen":
+        return False
+    if node.get("enable_backchannels") is False:
+        return False
+    if speaking_duration_ms <= 3000:
+        return False
+    node_id: str = str(node.get("id", "") or "")
+    if any(kw in node_id for kw in ("exit", "opt_out", "end")):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Pacing modes
+# ---------------------------------------------------------------------------
+
+PACING_MODES: dict[str, float] = {
+    "fast": 1.05,
+    "normal": 1.00,
+    "slow": 0.92,
+    "gentle": 0.88,
+}
+
+_KEY_QUESTION_WORDS = ("appointment", "offer", "recommend", "hiring", "meeting")
+
+
+def get_pacing_mode(node: dict, emotional_state: str = "neutral") -> str:
+    """Return a pacing mode string based on node context and homeowner emotional state."""
+    if not isinstance(node, dict):
+        return "normal"
+
+    if emotional_state in ("frustrated", "defensive"):
+        return "gentle"
+
+    prompt_text = str(node.get("prompt") or "").lower()
+
+    if node.get("type") == "listen" and any(w in prompt_text for w in _KEY_QUESTION_WORDS):
+        return "slow"
+
+    if node.get("type") == "say" and len(prompt_text) < 30:
+        return "fast"
+
+    return "normal"
+
+
+# ---------------------------------------------------------------------------
+# Original simulate_pathway (kept intact)
+# ---------------------------------------------------------------------------
+
 def simulate_pathway(pathway_obj: dict, current_node: Optional[str], user_reply: str, flags: dict) -> dict:
     start_node = pathway_obj.get("start_node")
     cur = current_node or start_node

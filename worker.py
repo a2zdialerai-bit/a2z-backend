@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 from datetime import datetime, time, timezone
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 from sqlmodel import Session, select
 
 from config import settings
-from models import CallLog, Campaign, Lead, Pathway, UsageEvent, Workspace
+from models import AuditLog, CallLog, Campaign, DNCEntry, Lead, Notification, Pathway, UsageEvent, Workspace
 from twilio_voice import place_outbound_call
+
+PHONE_PROVIDER = os.getenv("PHONE_PROVIDER", "telnyx")
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +129,96 @@ def record_usage_event(
     session.add(event)
 
 
+def _record_audit(
+    session: Session,
+    workspace_id: int,
+    action: str,
+    entity_type: str,
+    entity_id: Optional[int] = None,
+    details: Optional[dict] = None,
+) -> None:
+    """Write an AuditLog row."""
+    entry = AuditLog(
+        workspace_id=workspace_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        details_json=json.dumps(details) if details else None,
+    )
+    session.add(entry)
+
+
+def pre_call_checks(
+    lead: Lead,
+    campaign: Campaign,
+    settings_obj: Any,
+    session: Session,
+) -> Tuple[bool, str]:
+    """Run pre-call quality checks before placing an outbound call.
+
+    Args:
+        lead: The Lead to be called.
+        campaign: The active Campaign.
+        settings_obj: The workspace object (has API keys, call window, etc.)
+                      or falls back to global settings.
+        session: Active SQLModel session.
+
+    Returns:
+        (True, "ok") if all checks pass, (False, reason_string) on first failure.
+    """
+    ws: Optional[Workspace] = session.get(Workspace, campaign.workspace_id)
+
+    # 1. Twilio credentials
+    twilio_sid = (ws.twilio_account_sid if ws else None) or settings.twilio_account_sid
+    twilio_token = (ws.twilio_auth_token if ws else None) or settings.twilio_auth_token
+    if not twilio_sid or not twilio_token:
+        return False, "missing_twilio_credentials"
+
+    # 2. OpenAI key
+    openai_key = (ws.openai_api_key if ws else None) or settings.openai_api_key
+    if not openai_key:
+        return False, "missing_openai_api_key"
+
+    # 3. ElevenLabs key if voice_mode == "elevenlabs"
+    voice_mode = campaign.voice_mode or (ws.voice_mode if ws else "realtime")
+    if voice_mode == "elevenlabs":
+        el_key = (ws.elevenlabs_api_key if ws else None)
+        if not el_key:
+            return False, "missing_elevenlabs_api_key"
+
+    # 4. Pathway JSON valid
+    pathway = session.get(Pathway, campaign.pathway_id)
+    if not pathway:
+        return False, "pathway_not_found"
+    try:
+        json.loads(pathway.json_def or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return False, "pathway_json_invalid"
+
+    # 5. Lead phone not in DNC
+    phone_normalized = (lead.phone or "").strip()
+    dnc_stmt = (
+        select(DNCEntry)
+        .where(DNCEntry.workspace_id == campaign.workspace_id)
+        .where(DNCEntry.phone == phone_normalized)
+    )
+    dnc_hit = session.exec(dnc_stmt).first()
+    if dnc_hit:
+        return False, "phone_on_dnc_list"
+
+    # 6. Call window check
+    if ws:
+        ok_window = campaign_is_within_window(campaign, ws)
+        if not ok_window:
+            return False, "outside_call_window"
+
+    # 7. Attempt count < campaign limit
+    if lead.attempts >= campaign.attempt_limit_per_lead:
+        return False, "attempt_limit_reached"
+
+    return True, "ok"
+
+
 def run_campaign_tick(session: Session, campaign: Campaign) -> dict:
     workspace = session.get(Workspace, campaign.workspace_id)
     if not workspace:
@@ -147,15 +241,112 @@ def run_campaign_tick(session: Session, campaign: Campaign) -> dict:
     if not lead:
         return {"ok": True, "status": "idle", "message": "No callable leads available"}
 
+    # Pre-call quality checks
+    checks_ok, checks_reason = pre_call_checks(lead, campaign, workspace, session)
+    if not checks_ok:
+        _record_audit(
+            session,
+            workspace_id=workspace.id,
+            action="pre_call_check_failed",
+            entity_type="lead",
+            entity_id=lead.id,
+            details={"reason": checks_reason, "campaign_id": campaign.id},
+        )
+        lead.status = "skipped"
+        session.add(lead)
+        session.commit()
+        return {"ok": False, "error": f"pre_call_check_failed: {checks_reason}"}
+
+    # Usage metering check
+    if workspace.calls_this_month >= workspace.calls_limit:
+        logger.warning(f"Workspace {workspace.id} has reached call limit {workspace.calls_limit}")
+        return {"ok": False, "error": "workspace_call_limit_reached"}
+
+    # Hard minute limit check
+    minutes_used = getattr(workspace, 'minutes_used_this_month', 0) or 0
+    minutes_limit = getattr(workspace, 'minutes_limit', 200) or 200
+
+    if minutes_used >= minutes_limit:
+        running_campaigns = session.exec(
+            select(Campaign).where(
+                Campaign.workspace_id == workspace.id,
+                Campaign.status == "running"
+            )
+        ).all()
+        for camp in running_campaigns:
+            camp.status = "paused"
+            camp.pause_reason = "minute_limit_reached"
+            session.add(camp)
+        session.commit()
+        return {"ok": False, "reason": "minute_limit_reached"}
+
+    # 80% warning check — create notification if not already sent
+    warning_threshold = minutes_limit * 0.80
+    if minutes_used >= warning_threshold:
+        existing_warning = session.exec(
+            select(Notification).where(
+                Notification.workspace_id == workspace.id,
+                Notification.type == "minutes_80_percent_warning",
+            )
+        ).first()
+        if not existing_warning:
+            warning_notif = Notification(
+                workspace_id=workspace.id,
+                user_id=None,
+                type="minutes_80_percent_warning",
+                title="You are almost out of call minutes",
+                body=f"You have used {int(minutes_used)} of your {minutes_limit} included minutes this month. Upgrade now to avoid interruption.",
+                link="/app/billing",
+                read=False,
+            )
+            session.add(warning_notif)
+            session.commit()
+
+    # DNC permanent suppression check
+    dnc = session.exec(select(DNCEntry).where(DNCEntry.phone == lead.phone, DNCEntry.workspace_id == workspace.id)).first()
+    if dnc:
+        logger.info(f"Skipping lead {lead.id} — on DNC list")
+        lead.status = "do_not_call"
+        session.add(lead)
+        session.commit()
+        return {"ok": False, "error": "lead_on_dnc_list"}
+
     calllog = create_calllog_for_attempt(session, workspace, campaign, lead, pathway)
 
-    result = place_outbound_call(
-        workspace=workspace,
-        lead=lead,
-        campaign=campaign,
-        pathway=pathway,
-        calllog_id=calllog.id,
+    # Pre-warming audit event
+    _record_audit(
+        session,
+        workspace_id=workspace.id,
+        action="pre_warming",
+        entity_type="calllog",
+        entity_id=calllog.id,
+        details={"lead_id": lead.id, "campaign_id": campaign.id},
     )
+    session.commit()
+
+    if PHONE_PROVIDER == "telnyx":
+        from telnyx_voice import place_telnyx_call  # type: ignore
+        result = place_telnyx_call(
+            to_number=lead.phone,
+            calllog_id=calllog.id,
+            campaign_id=campaign.id,
+            lead_id=lead.id,
+            pathway_id=pathway.id,
+            workspace_id=workspace.id,
+            from_number=workspace.twilio_from_number or settings.twilio_from_number,
+        )
+        call_sid_key = "call_control_id"
+        default_status = "initiating"
+    else:
+        result = place_outbound_call(
+            workspace=workspace,
+            lead=lead,
+            campaign=campaign,
+            pathway=pathway,
+            calllog_id=calllog.id,
+        )
+        call_sid_key = "call_sid"
+        default_status = "queued"
 
     if not result.get("ok"):
         calllog.status = "failed"
@@ -167,14 +358,17 @@ def run_campaign_tick(session: Session, campaign: Campaign) -> dict:
         session.commit()
         return result
 
-    calllog.twilio_call_sid = result.get("call_sid")
-    calllog.status = result.get("status", "queued")
+    calllog.twilio_call_sid = result.get(call_sid_key)
+    calllog.status = result.get("status", default_status)
 
     lead.attempts += 1
     lead.last_called_at = utcnow()
 
     campaign.total_dials += 1
     campaign.last_run_at = utcnow()
+
+    workspace.calls_this_month += 1
+    session.add(workspace)
 
     record_usage_event(
         session,

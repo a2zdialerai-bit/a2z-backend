@@ -35,6 +35,21 @@ def create_access_token(user_id: int, expires_minutes: Optional[int] = None) -> 
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
 
 
+def create_refresh_token(data: dict) -> str:
+    payload = data.copy()
+    payload["exp"] = datetime.now(timezone.utc) + timedelta(days=30)
+    payload["iat"] = datetime.now(timezone.utc)
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
+
+
+def verify_refresh_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+
 def get_user_by_email(session: Session, email: str) -> Optional[User]:
     return session.exec(select(User).where(User.email == email)).first()
 
