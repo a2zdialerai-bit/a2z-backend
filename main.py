@@ -1078,7 +1078,7 @@ async def reset_usage(current_user: User = Depends(get_current_user), session: S
 
 @app.post("/auth/register")
 @limiter.limit("5/minute")
-def register(request: Request, payload: AuthRegisterIn = Body(), session: Session = Depends(get_session)) -> dict:
+def register(request: Request, payload: AuthRegisterIn = Body(...), session: Session = Depends(get_session)) -> dict:
     existing = session.exec(select(User).where(User.email == payload.email.lower().strip())).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
