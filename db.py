@@ -8,16 +8,27 @@ from sqlmodel import Session, SQLModel, create_engine
 from config import settings
 
 
+def _normalize_db_url(url: str) -> str:
+    """Ensure postgres URLs use the psycopg3 driver prefix expected by SQLAlchemy."""
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
+    elif url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
 def _sqlite_connect_args(database_url: str) -> dict:
     if database_url.startswith("sqlite"):
         return {"check_same_thread": False}
     return {}
 
 
+_db_url = _normalize_db_url(settings.database_url)
+
 engine = create_engine(
-    settings.database_url,
+    _db_url,
     echo=False,
-    connect_args=_sqlite_connect_args(settings.database_url),
+    connect_args=_sqlite_connect_args(_db_url),
     pool_pre_ping=True,
 )
 
