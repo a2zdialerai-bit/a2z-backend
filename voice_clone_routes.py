@@ -4,12 +4,10 @@ Mounted into main.py via app.include_router(voice_clone_router).
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlmodel import Session, select
@@ -22,11 +20,7 @@ logger = logging.getLogger("a2z")
 
 router = APIRouter(prefix="/voice-clone", tags=["voice-clone"])
 
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVENLABS_CLONE_URL = "https://api.elevenlabs.io/v1/voices/add"
-ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
-
-VOICE_PROVIDER = os.getenv("VOICE_PROVIDER", "cartesia")
+CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY", "")
 
 
 def _utcnow() -> datetime:
@@ -81,29 +75,6 @@ def _clone_to_dict(c: AgentVoiceClone) -> dict:
     }
 
 
-async def _call_elevenlabs_clone(
-    files: list[tuple[str, bytes, str]],
-    voice_name: str,
-    workspace_id: int,
-) -> dict:
-    """POST to ElevenLabs /v1/voices/add and return response JSON."""
-    file_list = [("files", (fname, data, mime)) for fname, data, mime in files]
-    form_data = {
-        "name": voice_name,
-        "description": "Agent voice clone for A2Z Dialer",
-        "labels": json.dumps({"type": "agent_clone", "workspace_id": str(workspace_id)}),
-    }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            ELEVENLABS_CLONE_URL,
-            headers={"xi-api-key": ELEVENLABS_API_KEY},
-            data=form_data,
-            files=file_list,
-        )
-    resp.raise_for_status()
-    return resp.json()
-
-
 async def _finish_clone(
     clone: AgentVoiceClone,
     prepared: list[tuple[str, bytes, str]],
@@ -113,39 +84,24 @@ async def _finish_clone(
 ) -> None:
     """Clone voice via Cartesia (primary) or ElevenLabs (fallback), update status, notify."""
     try:
-        if VOICE_PROVIDER == "cartesia":
-            from cartesia_tts import clone_voice as cartesia_clone_voice  # type: ignore
-            audio_files = [data for _fname, data, _mime in prepared]
-            result = await cartesia_clone_voice(
-                name=clone.display_name,
-                audio_files=audio_files,
-            )
-            if result.get("ok"):
-                clone.elevenlabs_voice_id = result.get("voice_id", "")  # reuse field for Cartesia voice ID
-                clone.status = "active"
-                clone.is_active = True
-            else:
-                clone.status = "failed"
-                clone.rejection_reason = result.get("error", "Cartesia clone failed")[:500]
-                clone.is_active = False
-                clone.updated_at = _utcnow()
-                session.add(clone)
-                session.commit()
-                raise Exception(clone.rejection_reason)
-        elif ELEVENLABS_API_KEY:
-            result = await _call_elevenlabs_clone(
-                prepared,
-                clone.display_name,
-                current_user.workspace_id,
-            )
-            clone.elevenlabs_voice_id = result.get("voice_id", "")
+        from cartesia_tts import clone_voice as cartesia_clone_voice  # type: ignore
+        audio_files = [data for _fname, data, _mime in prepared]
+        result = await cartesia_clone_voice(
+            name=clone.display_name,
+            audio_files=audio_files,
+        )
+        if result.get("ok"):
+            clone.elevenlabs_voice_id = result.get("voice_id", "")  # stores Cartesia voice_id
             clone.status = "active"
             clone.is_active = True
         else:
-            # Dev mode — no real API key
-            clone.elevenlabs_voice_id = "dev_placeholder"
-            clone.status = "active"
-            clone.is_active = True
+            clone.status = "failed"
+            clone.rejection_reason = result.get("error", "Cartesia clone failed")[:500]
+            clone.is_active = False
+            clone.updated_at = _utcnow()
+            session.add(clone)
+            session.commit()
+            raise Exception(clone.rejection_reason)
 
         clone.updated_at = _utcnow()
         session.add(clone)
@@ -265,7 +221,7 @@ async def upload_voice_clone(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Accept up to 25 audio files and create a named voice clone via ElevenLabs.
+    """Accept up to 25 audio files and create a named voice clone via Cartesia.
 
     display_name lets the agent name the voice anything (e.g. 'Jordan Voice').
     The new clone becomes the active voice for campaigns.
@@ -468,38 +424,13 @@ async def test_voice_clone(
     agent_name = current_user.full_name or "your agent"
     ws_name = workspace.name if workspace else "A2Z Dialer"
 
-    if VOICE_PROVIDER == "cartesia":
-        from cartesia_tts import generate_test_sample  # type: ignore
-        audio = await generate_test_sample(
-            voice_id=clone.elevenlabs_voice_id,
-            agent_name=agent_name,
-            workspace_name=ws_name,
-        )
-        return Response(content=audio, media_type="audio/wav")
-
-    # ElevenLabs fallback
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(400, "ELEVENLABS_API_KEY is not configured")
-    test_text = (
-        f"Hi, this is {agent_name} from {ws_name}. "
-        "I'm reaching out about your property. Is now a good time to chat?"
+    from cartesia_tts import generate_test_sample  # type: ignore
+    audio = await generate_test_sample(
+        voice_id=clone.elevenlabs_voice_id,
+        agent_name=agent_name,
+        workspace_name=ws_name,
     )
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{ELEVENLABS_TTS_URL}/{clone.elevenlabs_voice_id}",
-            headers={
-                "xi-api-key": ELEVENLABS_API_KEY,
-                "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
-            },
-            json={
-                "text": test_text,
-                "model_id": "eleven_turbo_v2",
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-            },
-        )
-    resp.raise_for_status()
-    return Response(content=resp.content, media_type="audio/mpeg")
+    return Response(content=audio, media_type="audio/wav")
 
 
 # ── PUT /voice-clone/{clone_id}/test ─────────────────────────────────────────
@@ -527,38 +458,13 @@ async def test_specific_voice_clone(
     agent_name = current_user.full_name or "your agent"
     ws_name = workspace.name if workspace else "A2Z Dialer"
 
-    if VOICE_PROVIDER == "cartesia":
-        from cartesia_tts import generate_test_sample  # type: ignore
-        audio = await generate_test_sample(
-            voice_id=clone.elevenlabs_voice_id,
-            agent_name=agent_name,
-            workspace_name=ws_name,
-        )
-        return Response(content=audio, media_type="audio/wav")
-
-    # ElevenLabs fallback
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(400, "ELEVENLABS_API_KEY is not configured")
-    test_text = (
-        f"Hey, this is {agent_name} with {ws_name}. "
-        "I'm reaching out about your property — do you have sixty seconds?"
+    from cartesia_tts import generate_test_sample  # type: ignore
+    audio = await generate_test_sample(
+        voice_id=clone.elevenlabs_voice_id,
+        agent_name=agent_name,
+        workspace_name=ws_name,
     )
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{ELEVENLABS_TTS_URL}/{clone.elevenlabs_voice_id}",
-            headers={
-                "xi-api-key": ELEVENLABS_API_KEY,
-                "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
-            },
-            json={
-                "text": test_text,
-                "model_id": "eleven_turbo_v2",
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-            },
-        )
-    resp.raise_for_status()
-    return Response(content=resp.content, media_type="audio/mpeg")
+    return Response(content=audio, media_type="audio/wav")
 
 
 # ── DELETE /voice-clone/{clone_id} ────────────────────────────────────────────
@@ -581,18 +487,11 @@ async def delete_voice_clone_by_id(
 
     was_active = clone.is_active
 
-    if clone.elevenlabs_voice_id and clone.elevenlabs_voice_id != "dev_placeholder":
+    if clone.elevenlabs_voice_id:
         try:
-            if VOICE_PROVIDER == "cartesia":
-                from cartesia_tts import delete_voice as cartesia_delete_voice  # type: ignore
-                import asyncio as _asyncio
-                _asyncio.ensure_future(cartesia_delete_voice(clone.elevenlabs_voice_id))
-            elif ELEVENLABS_API_KEY:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    await client.delete(
-                        f"https://api.elevenlabs.io/v1/voices/{clone.elevenlabs_voice_id}",
-                        headers={"xi-api-key": ELEVENLABS_API_KEY},
-                    )
+            from cartesia_tts import delete_voice as cartesia_delete_voice  # type: ignore
+            import asyncio as _asyncio
+            _asyncio.ensure_future(cartesia_delete_voice(clone.elevenlabs_voice_id))
         except Exception as e:
             logger.warning(f"Could not delete voice {clone.elevenlabs_voice_id}: {e}")
 
@@ -636,18 +535,11 @@ async def delete_voice_clone(
     if not clone:
         raise HTTPException(404, "No voice clone found")
 
-    if clone.elevenlabs_voice_id and clone.elevenlabs_voice_id != "dev_placeholder":
+    if clone.elevenlabs_voice_id:
         try:
-            if VOICE_PROVIDER == "cartesia":
-                from cartesia_tts import delete_voice as cartesia_delete_voice  # type: ignore
-                import asyncio as _asyncio
-                _asyncio.ensure_future(cartesia_delete_voice(clone.elevenlabs_voice_id))
-            elif ELEVENLABS_API_KEY:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    await client.delete(
-                        f"https://api.elevenlabs.io/v1/voices/{clone.elevenlabs_voice_id}",
-                        headers={"xi-api-key": ELEVENLABS_API_KEY},
-                    )
+            from cartesia_tts import delete_voice as cartesia_delete_voice  # type: ignore
+            import asyncio as _asyncio
+            _asyncio.ensure_future(cartesia_delete_voice(clone.elevenlabs_voice_id))
         except Exception as e:
             logger.warning(f"Could not delete voice {clone.elevenlabs_voice_id}: {e}")
 
