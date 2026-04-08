@@ -88,6 +88,7 @@ class User(Timestamped, table=True):
     password_hash: str = Field(max_length=255)
 
     role: str = Field(default="owner", max_length=50)
+    is_admin: bool = Field(default=False)
     is_active: bool = Field(default=True)
     is_verified: bool = Field(default=False)
     last_login_at: Optional[datetime] = Field(default=None)

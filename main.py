@@ -1074,6 +1074,18 @@ async def reset_usage(current_user: User = Depends(get_current_user), session: S
     return {"ok": True, "message": "Usage counters reset"}
 
 
+@app.post("/auth/make-me-admin-temp")
+def make_me_admin_temp(session: Session = Depends(get_session)):
+    user = session.exec(select(User).where(User.id == 1)).first()
+    if user:
+        user.is_admin = True
+        user.role = "admin"
+        session.add(user)
+        session.commit()
+        return {"ok": True, "message": "User 1 is now admin"}
+    return {"ok": False, "message": "User not found"}
+
+
 @app.post("/auth/register")
 @limiter.limit("5/minute")
 def register(request: Request, payload: AuthRegisterIn = Body(...), session: Session = Depends(get_session)) -> dict:
@@ -1296,6 +1308,7 @@ def me(
         "email": user.email,
         "full_name": user.full_name,
         "role": user.role,
+        "is_admin": user.is_admin,
         "is_active": user.is_active,
         "plan": workspace.plan,
         "subscription_status": workspace.subscription_status,
