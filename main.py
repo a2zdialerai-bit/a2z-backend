@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlmodel import Session, func, select
@@ -1078,7 +1078,7 @@ async def reset_usage(current_user: User = Depends(get_current_user), session: S
 
 @app.post("/auth/register")
 @limiter.limit("5/minute")
-def register(request: Request, payload: AuthRegisterIn, session: Session = Depends(get_session)) -> dict:
+def register(request: Request, payload: AuthRegisterIn = Body(), session: Session = Depends(get_session)) -> dict:
     existing = session.exec(select(User).where(User.email == payload.email.lower().strip())).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
