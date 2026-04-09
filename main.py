@@ -2150,33 +2150,123 @@ def reports_dashboard(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    total_leads = session.exec(
-        select(func.count()).select_from(Lead).where(Lead.workspace_id == user.workspace_id)
-    ).one()
-    new_leads = session.exec(
-        select(func.count()).select_from(Lead).where(Lead.workspace_id == user.workspace_id, Lead.status == "new")
-    ).one()
-    active_campaigns = session.exec(
-        select(func.count()).select_from(Campaign).where(Campaign.workspace_id == user.workspace_id, Campaign.status == "running")
-    ).one()
-    calls_today = session.exec(
-        select(func.count()).select_from(CallLog).where(CallLog.workspace_id == user.workspace_id)
-    ).one()
-    total_booked = session.exec(
-        select(func.count()).select_from(Appointment).where(Appointment.workspace_id == user.workspace_id)
-    ).one()
-    total_opt_out = session.exec(
-        select(func.count()).select_from(DNCEntry).where(DNCEntry.workspace_id == user.workspace_id)
-    ).one()
-
-    return {
-        "total_leads": int(total_leads or 0),
-        "new_leads": int(new_leads or 0),
-        "active_campaigns": int(active_campaigns or 0),
-        "calls_today": int(calls_today or 0),
-        "total_booked": int(total_booked or 0),
-        "total_opt_out": int(total_opt_out or 0),
+    _empty = {
+        "total_calls": 0, "total_calls_today": 0, "connected_calls": 0,
+        "booked_calls": 0, "connect_rate": 0.0, "booking_rate": 0.0,
+        "qualified_leads": 0, "minutes_used": 0, "minutes_limit": 1000,
+        "minutes_remaining": 1000, "marketplace_listings": 0, "revenue_cents": 0,
+        "appointments_this_month": 0, "calls_this_week": 0, "connects_this_week": 0,
+        "booked_this_week": 0, "voicemails_this_week": 0, "callbacks_this_week": 0,
+        "dnc_this_week": 0, "recent_calls": [], "recent_appointments": [],
+        "active_campaigns": [], "has_top_agent_profile": False,
     }
+    try:
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = now - timedelta(days=7)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        wid = user.workspace_id
+
+        workspace = session.get(Workspace, wid)
+        minutes_used = int(float(workspace.minutes_used_this_month or 0)) if workspace else 0
+        minutes_limit = workspace.minutes_limit if workspace else 1000
+        minutes_remaining = max(0, minutes_limit - minutes_used)
+
+        def _count(model, *filters):
+            return int(session.exec(select(func.count()).select_from(model).where(*filters)).one() or 0)
+
+        total_calls      = _count(CallLog, CallLog.workspace_id == wid)
+        total_calls_today = _count(CallLog, CallLog.workspace_id == wid, CallLog.created_at >= today_start)
+        connected_calls  = _count(CallLog, CallLog.workspace_id == wid, CallLog.status == "completed")
+        booked_calls     = _count(Appointment, Appointment.workspace_id == wid)
+        qualified_leads  = _count(Lead, Lead.workspace_id == wid, Lead.readiness_score >= 60)
+        marketplace_listings = _count(MarketplaceListing, MarketplaceListing.workspace_id == wid)
+        appointments_this_month = _count(Appointment, Appointment.workspace_id == wid, Appointment.created_at >= month_start)
+
+        calls_this_week     = _count(CallLog, CallLog.workspace_id == wid, CallLog.created_at >= week_start)
+        connects_this_week  = _count(CallLog, CallLog.workspace_id == wid, CallLog.created_at >= week_start, CallLog.status == "completed")
+        booked_this_week    = _count(Appointment, Appointment.workspace_id == wid, Appointment.created_at >= week_start)
+        voicemails_this_week = _count(CallLog, CallLog.workspace_id == wid, CallLog.created_at >= week_start, CallLog.disposition == "voicemail")
+        callbacks_this_week  = _count(CallLog, CallLog.workspace_id == wid, CallLog.created_at >= week_start, CallLog.disposition == "callback")
+        dnc_this_week       = _count(DNCEntry, DNCEntry.workspace_id == wid, DNCEntry.created_at >= week_start)
+
+        connect_rate = round(connected_calls / total_calls * 100, 1) if total_calls > 0 else 0.0
+        booking_rate = round(booked_calls / total_calls * 100, 1) if total_calls > 0 else 0.0
+
+        recent_call_rows = session.exec(
+            select(CallLog).where(CallLog.workspace_id == wid)
+            .order_by(CallLog.created_at.desc()).limit(10)
+        ).all()
+        recent_calls = []
+        for c in recent_call_rows:
+            lead_name = "Unknown"
+            if c.lead_id:
+                lead = session.get(Lead, c.lead_id)
+                if lead:
+                    lead_name = lead.homeowner_name or lead.first_name or "Unknown"
+            recent_calls.append({
+                "id": c.id,
+                "disposition": c.disposition or c.status,
+                "lead_name": lead_name,
+                "campaign_id": c.campaign_id,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "duration_seconds": c.duration_seconds,
+            })
+
+        recent_appt_rows = session.exec(
+            select(Appointment).where(Appointment.workspace_id == wid)
+            .order_by(Appointment.created_at.desc()).limit(5)
+        ).all()
+        recent_appointments = [{
+            "id": a.id,
+            "homeowner_name": a.homeowner_name or "Unknown",
+            "appointment_time_iso": a.appointment_time_iso,
+            "status": a.status,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "campaign_id": a.campaign_id,
+        } for a in recent_appt_rows]
+
+        campaign_rows = session.exec(
+            select(Campaign).where(Campaign.workspace_id == wid)
+            .order_by(Campaign.updated_at.desc()).limit(20)
+        ).all()
+        active_campaigns_list = []
+        for camp in campaign_rows:
+            if camp.status not in ("running", "paused"):
+                continue
+            lead_list = session.get(LeadList, camp.lead_list_id) if camp.lead_list_id else None
+            active_campaigns_list.append({
+                "id": camp.id,
+                "name": camp.name,
+                "status": camp.status,
+                "total_dials": camp.total_dials,
+                "total_connected": camp.total_connected,
+                "total_booked": camp.total_booked,
+                "total_leads": lead_list.total_records if lead_list else 0,
+                "pause_reason": camp.pause_reason,
+            })
+
+        agent_profile = session.exec(select(AgentProfile).where(AgentProfile.workspace_id == wid)).first()
+
+        return {
+            "total_calls": total_calls, "total_calls_today": total_calls_today,
+            "connected_calls": connected_calls, "booked_calls": booked_calls,
+            "connect_rate": connect_rate, "booking_rate": booking_rate,
+            "qualified_leads": qualified_leads, "minutes_used": minutes_used,
+            "minutes_limit": minutes_limit, "minutes_remaining": minutes_remaining,
+            "marketplace_listings": marketplace_listings, "revenue_cents": 0,
+            "appointments_this_month": appointments_this_month,
+            "calls_this_week": calls_this_week, "connects_this_week": connects_this_week,
+            "booked_this_week": booked_this_week, "voicemails_this_week": voicemails_this_week,
+            "callbacks_this_week": callbacks_this_week, "dnc_this_week": dnc_this_week,
+            "recent_calls": recent_calls, "recent_appointments": recent_appointments,
+            "active_campaigns": active_campaigns_list,
+            "has_top_agent_profile": agent_profile is not None,
+        }
+    except Exception as _exc:
+        logger.error(f"Dashboard error: {_exc}")
+        return _empty
 
 
 @app.get("/dnc")
