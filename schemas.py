@@ -142,6 +142,8 @@ class WorkspaceSettingsUpdateIn(BaseModel):
     dnc_enabled: Optional[bool] = None
     recording_enabled: Optional[bool] = None
     strict_pathway_mode: Optional[bool] = None
+    preferred_voice_id: Optional[str] = None
+    preferred_voice_gender: Optional[str] = None
 
 
 class DashboardKpiOut(BaseModel):

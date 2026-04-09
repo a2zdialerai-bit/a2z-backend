@@ -2358,6 +2358,28 @@ def update_workspace_settings(
     return workspace.model_dump()
 
 
+@app.get("/voices/available")
+def get_available_voices(
+    user: User = Depends(get_current_user),
+) -> dict:
+    return {
+        "voices": [
+            {
+                "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+                "name": "Default Female",
+                "description": "Professional female voice",
+                "gender": "female",
+            },
+            {
+                "id": "228fca29-3a0a-435c-8728-5cb483251068",
+                "name": "Default Male",
+                "description": "Professional male voice",
+                "gender": "male",
+            },
+        ]
+    }
+
+
 @app.post("/worker/run-once")
 def worker_run_once(
     user: User = Depends(get_current_user),

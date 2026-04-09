@@ -35,6 +35,17 @@ engine = create_engine(
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
+    # Idempotent column migrations
+    with engine.connect() as conn:
+        for sql in [
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS preferred_voice_id VARCHAR(255)",
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS preferred_voice_gender VARCHAR(50)",
+        ]:
+            try:
+                conn.execute(__import__("sqlalchemy").text(sql))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 
 def get_session() -> Generator[Session, None, None]:

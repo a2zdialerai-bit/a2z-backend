@@ -76,6 +76,9 @@ class Workspace(Timestamped, table=True):
     minutes_limit: int = Field(default=200)
     overage_rate_cents: int = Field(default=18)
 
+    preferred_voice_id: Optional[str] = Field(default=None, max_length=255)
+    preferred_voice_gender: Optional[str] = Field(default=None, max_length=50)
+
 
 class User(Timestamped, table=True):
     __tablename__ = "users"
