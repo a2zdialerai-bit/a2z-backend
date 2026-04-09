@@ -137,6 +137,18 @@ class Settings:
     autopilot_limit_per_campaign: int = _env_int("AUTOPILOT_LIMIT_PER_CAMPAIGN", 3)
     worker_max_concurrency: int = _env_int("WORKER_MAX_CONCURRENCY", 5)
 
+    # Marketplace fee — A2Z takes 40%, seller/agent gets 60%
+    marketplace_transaction_fee_pct: float = _env_float("MARKETPLACE_TRANSACTION_FEE_PCT", 40.0)
+
+    # Cartesia TTS
+    cartesia_model_id: str = os.getenv("CARTESIA_MODEL_ID", "sonic-3").strip()
+    cartesia_voice_id_default: str = os.getenv("CARTESIA_VOICE_ID_DEFAULT", "f786b574-daa5-4673-aa0c-cbe3e8534c02").strip()
+    cartesia_voice_id_male: str = os.getenv("CARTESIA_VOICE_ID_MALE", "228fca29-3a0a-435c-8728-5cb483251068").strip()
+
+    # Top Agent SMS follow-up
+    top_agent_sms_follow_up_enabled: bool = _env_bool("TOP_AGENT_SMS_FOLLOW_UP_ENABLED", True)
+    top_agent_sms_delay_minutes: int = _env_int("TOP_AGENT_SMS_DELAY_MINUTES", 10)
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "call_days", _env_csv("CALL_DAYS", "Mon,Tue,Wed,Thu,Fri,Sat"))
 

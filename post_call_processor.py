@@ -8,7 +8,7 @@ from typing import Optional, Any
 
 from sqlmodel import Session, select
 
-from models import CallLog, Lead, MarketplaceListing
+from models import CallLog, Campaign, Lead, MarketplaceListing
 
 logger = logging.getLogger("a2z.post_call")
 
@@ -106,13 +106,21 @@ def process_completed_call(
     # Calculate readiness score
     readiness_score = calculate_readiness_score(extracted_fields, disposition)
 
+    # Determine pricing by readiness score
+    def _price_by_score(score: int) -> int:
+        if score >= 93:
+            return 12500  # $125
+        elif score >= 86:
+            return 10000  # $100
+        else:
+            return 8500   # $85 (for 80-85)
+
     # Update lead
     if lead:
         lead.readiness_score = readiness_score
         lead.marketplace_eligible = (
-            readiness_score >= 60
+            readiness_score >= 80
             and disposition not in ("opted_out", "wrong_number")
-            and bool(extracted_fields.get("seller_motivation") or extracted_fields.get("why_not_sold"))
         )
         session.add(lead)
 
@@ -120,10 +128,22 @@ def process_completed_call(
     call_log.disposition = disposition
     session.add(call_log)
 
-    # Auto-create marketplace listing if eligible
+    # Determine if this is an admin campaign
+    campaign = session.get(Campaign, call_log.campaign_id) if call_log.campaign_id else None
+    is_admin_campaign = bool(campaign and getattr(campaign, "is_admin_campaign", False))
+
+    # Platform fee: 0% for admin campaigns, 40% for client agents
+    if is_admin_campaign:
+        platform_fee_pct = 0
+        seller_payout_pct = 100
+    else:
+        platform_fee_pct = 40
+        seller_payout_pct = 60
+
+    # Auto-create marketplace listing if eligible (readiness >= 80)
     if lead and lead.marketplace_eligible:
         listing_type = "booked_appointment" if disposition == "booked_appointment" else "qualified_lead"
-        base_price = 9500 if listing_type == "booked_appointment" else 4500  # cents
+        base_price = _price_by_score(readiness_score)
 
         # Derive territory from zip/city (Lead uses city/state/postal_code)
         territory_key = "unknown"
@@ -157,7 +177,15 @@ def process_completed_call(
             appointment_time_iso=appt_time_raw,
         )
         session.add(listing)
-        logger.info(f"Auto-created MarketplaceListing for lead {lead.id} with readiness {readiness_score}")
+        logger.info(
+            f"Auto-created MarketplaceListing for lead {lead.id} with readiness {readiness_score} "
+            f"price={base_price} platform_fee_pct={platform_fee_pct} admin={is_admin_campaign}"
+        )
+
+        # Update campaign stats
+        if campaign:
+            campaign.marketplace_listings_count = getattr(campaign, "marketplace_listings_count", 0) + 1
+            session.add(campaign)
 
     session.commit()
     logger.info(

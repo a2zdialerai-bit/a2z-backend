@@ -36,13 +36,21 @@ engine = create_engine(
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     # Idempotent column migrations
+    from sqlalchemy import text
     with engine.connect() as conn:
         for sql in [
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS preferred_voice_id VARCHAR(255)",
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS preferred_voice_gender VARCHAR(50)",
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS is_admin_workspace BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS is_admin_campaign BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS marketplace_listings_count INTEGER DEFAULT 0",
+            "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS marketplace_revenue_cents INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP",
         ]:
             try:
-                conn.execute(__import__("sqlalchemy").text(sql))
+                conn.execute(text(sql))
                 conn.commit()
             except Exception:
                 conn.rollback()

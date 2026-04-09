@@ -1891,7 +1891,23 @@ def list_campaigns(
         .where(Campaign.workspace_id == user.workspace_id)
         .order_by(Campaign.created_at.desc())
     ).all()
-    return [row.model_dump() for row in rows]
+    result = []
+    for row in rows:
+        d = row.model_dump()
+        # Enrich with lead list stats
+        lead_list = session.get(LeadList, row.lead_list_id) if row.lead_list_id else None
+        d["total_leads"] = lead_list.total_records if lead_list else 0
+        d["dialed"] = row.total_dials
+        d["connected"] = row.total_connected
+        d["booked"] = row.total_booked
+        # Lead list and pathway names for display
+        if lead_list:
+            d["lead_list_name"] = lead_list.name
+        pathway = session.get(Pathway, row.pathway_id) if row.pathway_id else None
+        if pathway:
+            d["pathway_name"] = pathway.name
+        result.append(d)
+    return result
 
 
 @app.post("/campaigns")
@@ -1923,6 +1939,7 @@ def create_campaign(
         end_hour_local=payload.end_hour_local,
         allowed_days_csv=payload.allowed_days_csv,
         autopilot_enabled=True,
+        is_admin_campaign=payload.is_admin_campaign,
     )
     session.add(row)
     session.commit()
@@ -2359,25 +2376,59 @@ def update_workspace_settings(
 
 
 @app.get("/voices/available")
-def get_available_voices(
+async def get_available_voices(
     user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ) -> dict:
-    return {
-        "voices": [
-            {
-                "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
-                "name": "Default Female",
-                "description": "Professional female voice",
-                "gender": "female",
-            },
-            {
-                "id": "228fca29-3a0a-435c-8728-5cb483251068",
-                "name": "Default Male",
-                "description": "Professional male voice",
-                "gender": "male",
-            },
-        ]
-    }
+    import aiohttp
+    cartesia_api_key = os.getenv("CARTESIA_API_KEY", "")
+    default_voices = [
+        {
+            "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+            "name": "Default Female",
+            "description": "Professional female voice — warm and conversational",
+            "gender": "female",
+            "is_cloned": False,
+            "is_public": True,
+        },
+        {
+            "id": "228fca29-3a0a-435c-8728-5cb483251068",
+            "name": "Default Male",
+            "description": "Professional male voice — confident and clear",
+            "gender": "male",
+            "is_cloned": False,
+            "is_public": True,
+        },
+    ]
+    if cartesia_api_key:
+        try:
+            async with aiohttp.ClientSession() as http_session:
+                async with http_session.get(
+                    "https://api.cartesia.ai/voices",
+                    headers={
+                        "X-API-Key": cartesia_api_key,
+                        "Cartesia-Version": "2024-06-10",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        voices_raw = data if isinstance(data, list) else data.get("voices", [])
+                        voices = []
+                        for v in voices_raw:
+                            voices.append({
+                                "id": v.get("id", ""),
+                                "name": v.get("name", "Unknown"),
+                                "description": v.get("description", ""),
+                                "gender": v.get("gender", "neutral"),
+                                "is_cloned": v.get("is_public", True) is False,
+                                "is_public": v.get("is_public", True),
+                            })
+                        if voices:
+                            return {"voices": voices}
+        except Exception as exc:
+            logger.warning(f"Could not fetch Cartesia voices: {exc}")
+    return {"voices": default_voices}
 
 
 @app.post("/worker/run-once")
@@ -3420,7 +3471,8 @@ async def purchase_marketplace_listing(
 
     price_paid_cents = listing.final_price_cents
     buyer_fee_cents = 0
-    platform_fee_cents = int(price_paid_cents * 0.15)
+    platform_fee_pct = 0.40  # A2Z takes 40%, seller/agent gets 60%
+    platform_fee_cents = int(price_paid_cents * platform_fee_pct)
     partner_payout_cents = max(price_paid_cents - platform_fee_cents, 0)
 
     purchase = MarketplacePurchase(

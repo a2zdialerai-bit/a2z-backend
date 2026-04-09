@@ -78,6 +78,7 @@ class Workspace(Timestamped, table=True):
 
     preferred_voice_id: Optional[str] = Field(default=None, max_length=255)
     preferred_voice_gender: Optional[str] = Field(default=None, max_length=50)
+    is_admin_workspace: bool = Field(default=False)
 
 
 class User(Timestamped, table=True):
@@ -234,6 +235,10 @@ class Campaign(Timestamped, table=True):
 
     send_profile_sms_after_call: bool = Field(default=True)
     profile_sms_delay_minutes: int = Field(default=10)
+
+    is_admin_campaign: bool = Field(default=False)
+    marketplace_listings_count: int = Field(default=0)
+    marketplace_revenue_cents: int = Field(default=0)
 
 
 class CallLog(Timestamped, table=True):

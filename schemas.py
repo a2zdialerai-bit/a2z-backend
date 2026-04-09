@@ -72,6 +72,7 @@ class CampaignCreateIn(BaseModel):
     start_hour_local: str = Field(default="09:00", max_length=10)
     end_hour_local: str = Field(default="19:00", max_length=10)
     allowed_days_csv: str = Field(default="Mon,Tue,Wed,Thu,Fri,Sat", max_length=100)
+    is_admin_campaign: bool = False
 
 
 class CampaignControlOut(BaseModel):
@@ -144,6 +145,7 @@ class WorkspaceSettingsUpdateIn(BaseModel):
     strict_pathway_mode: Optional[bool] = None
     preferred_voice_id: Optional[str] = None
     preferred_voice_gender: Optional[str] = None
+    is_admin_workspace: Optional[bool] = None
 
 
 class DashboardKpiOut(BaseModel):
