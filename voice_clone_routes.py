@@ -8,13 +8,13 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlmodel import Session, select
 
 from auth import get_current_user
 from db import get_session
-from models import AgentVoiceClone, Campaign, Notification, User, Workspace
+from models import AgentVoiceClone, Campaign, Notification, PartnerPayout, User, Workspace
 
 logger = logging.getLogger("a2z")
 
@@ -556,6 +556,102 @@ async def delete_voice_clone(
     session.add(clone)
     session.commit()
     return {"ok": True}
+
+
+# ── POST /voice-clone/{clone_id}/share ───────────────────────────────────────
+
+@router.post("/{clone_id}/share")
+async def share_voice_clone(
+    clone_id: int,
+    display_name: str = Body(...),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    clone = session.exec(
+        select(AgentVoiceClone).where(
+            AgentVoiceClone.id == clone_id,
+            AgentVoiceClone.workspace_id == current_user.workspace_id,
+            AgentVoiceClone.status == "active",
+        )
+    ).first()
+    if not clone:
+        raise HTTPException(status_code=404, detail="Voice clone not found")
+    clone.is_shared = True
+    clone.display_name_public = display_name
+    clone.updated_at = _utcnow()
+    session.add(clone)
+    session.commit()
+    try:
+        from main import global_ws  # type: ignore
+        await global_ws.broadcast({
+            "event": "voice.shared",
+            "voice_id": clone.elevenlabs_voice_id,
+            "name": display_name,
+            "workspace_id": current_user.workspace_id,
+        })
+    except Exception as _e:
+        logger.warning(f"WS broadcast failed: {_e}")
+    return {"ok": True, "message": "Voice is now available to all agents"}
+
+
+# ── POST /voice-clone/{clone_id}/unshare ──────────────────────────────────────
+
+@router.post("/{clone_id}/unshare")
+def unshare_voice_clone(
+    clone_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    clone = session.exec(
+        select(AgentVoiceClone).where(
+            AgentVoiceClone.id == clone_id,
+            AgentVoiceClone.workspace_id == current_user.workspace_id,
+        )
+    ).first()
+    if not clone:
+        raise HTTPException(status_code=404, detail="Voice clone not found")
+    clone.is_shared = False
+    clone.updated_at = _utcnow()
+    session.add(clone)
+    session.commit()
+    return {"ok": True}
+
+
+# ── POST /voice-clone/request-payout ─────────────────────────────────────────
+
+@router.post("/request-payout")
+def request_voice_royalty_payout(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Request payout of accumulated voice royalties (min $10 = 1000 cents)."""
+    MIN_PAYOUT_CENTS = 1000
+    clone = session.exec(
+        select(AgentVoiceClone).where(
+            AgentVoiceClone.workspace_id == current_user.workspace_id,
+            AgentVoiceClone.status == "active",
+        )
+    ).first()
+    if not clone:
+        raise HTTPException(status_code=404, detail="No active voice clone found")
+    pending = getattr(clone, "total_royalties_earned_cents", 0)
+    if pending < MIN_PAYOUT_CENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Minimum payout is $10. You have ${pending/100:.2f} pending."
+        )
+    payout = PartnerPayout(
+        workspace_id=current_user.workspace_id,
+        payout_type="voice_royalty",
+        gross_amount_cents=pending,
+        net_amount_cents=pending,
+        platform_fee_cents=0,
+        status="pending",
+        currency="usd",
+    )
+    session.add(payout)
+    session.commit()
+    return {"ok": True, "payout_cents": pending, "message": f"Payout of ${pending/100:.2f} requested"}
 
 
 # ── Admin helper ──────────────────────────────────────────────────────────────

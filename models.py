@@ -816,6 +816,13 @@ class AgentVoiceClone(SQLModel, table=True):
     is_active: bool = Field(default=False)
     created_at: datetime = Field(default_factory=utcnow)
 
+    # Sharing & royalties
+    is_shared: bool = Field(default=False)
+    display_name_public: Optional[str] = Field(default=None, max_length=255)
+    royalty_rate_cents_per_min: int = Field(default=1)
+    total_minutes_used: int = Field(default=0)
+    total_royalties_earned_cents: int = Field(default=0)
+
 
 # -----------------------------
 # Team / Multi-User

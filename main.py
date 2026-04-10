@@ -2375,60 +2375,233 @@ def update_workspace_settings(
     return workspace.model_dump()
 
 
+CURATED_VOICES = [
+    {
+        "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+        "name": "Sarah",
+        "description": "Warm, professional female — top performer for expired listings",
+        "gender": "female",
+        "is_default": True,
+        "is_curated": True,
+        "category": "A2Z Recommended",
+    },
+    {
+        "id": "228fca29-3a0a-435c-8728-5cb483251068",
+        "name": "Michael",
+        "description": "Steady, trustworthy male — builds instant rapport",
+        "gender": "male",
+        "is_default": True,
+        "is_curated": True,
+        "category": "A2Z Recommended",
+    },
+    {
+        "id": "694f9389-aac1-45b6-b726-9d9369183238",
+        "name": "Jacqueline",
+        "description": "Confident, empathetic female — great for skeptical homeowners",
+        "gender": "female",
+        "is_curated": True,
+        "category": "A2Z Recommended",
+    },
+    {
+        "id": "5c42302c-194b-4d0c-ba1a-8cb485c84ab9",
+        "name": "Ross",
+        "description": "Reliable, clear male — professional and approachable",
+        "gender": "male",
+        "is_curated": True,
+        "category": "A2Z Recommended",
+    },
+    {
+        "id": "b7d50908-b17c-442d-ad8d-810c63997ed9",
+        "name": "Brooke",
+        "description": "Confident, conversational female — natural and engaging",
+        "gender": "female",
+        "is_curated": True,
+        "category": "A2Z Recommended",
+    },
+    {
+        "id": "c2ac25f9-ecc4-4f56-9095-651354df60c9",
+        "name": "Ronald",
+        "description": "Deep, calm male — commands attention and trust",
+        "gender": "male",
+        "is_curated": True,
+        "category": "A2Z Recommended",
+    },
+]
+
+# Simple in-process cache: (timestamp, data)
+_voices_cache: tuple[float, list] = (0.0, [])
+_VOICES_CACHE_TTL = 300  # 5 minutes
+
 @app.get("/voices/available")
 async def get_available_voices(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    import aiohttp
-    cartesia_api_key = os.getenv("CARTESIA_API_KEY", "")
-    default_voices = [
-        {
-            "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
-            "name": "Default Female",
-            "description": "Professional female voice — warm and conversational",
-            "gender": "female",
+    global _voices_cache
+    import time as _time_mod
+
+    voices: list[dict] = []
+
+    # 1. Always include curated voices first
+    curated_ids = {v["id"] for v in CURATED_VOICES}
+    for v in CURATED_VOICES:
+        voices.append({
+            "id": v["id"],
+            "name": v["name"],
+            "description": v.get("description", ""),
+            "gender": v.get("gender", "unknown"),
+            "is_default": v.get("is_default", False),
+            "is_curated": True,
             "is_cloned": False,
-            "is_public": True,
-        },
-        {
-            "id": "228fca29-3a0a-435c-8728-5cb483251068",
-            "name": "Default Male",
-            "description": "Professional male voice — confident and clear",
-            "gender": "male",
-            "is_cloned": False,
-            "is_public": True,
-        },
-    ]
-    if cartesia_api_key:
-        try:
-            async with aiohttp.ClientSession() as http_session:
-                async with http_session.get(
-                    "https://api.cartesia.ai/voices",
-                    headers={
-                        "X-API-Key": cartesia_api_key,
-                        "Cartesia-Version": "2024-06-10",
-                    },
-                    timeout=aiohttp.ClientTimeout(total=5),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        voices_raw = data if isinstance(data, list) else data.get("voices", [])
-                        voices = []
-                        for v in voices_raw:
-                            voices.append({
-                                "id": v.get("id", ""),
-                                "name": v.get("name", "Unknown"),
-                                "description": v.get("description", ""),
-                                "gender": v.get("gender", "neutral"),
-                                "is_cloned": v.get("is_public", True) is False,
-                                "is_public": v.get("is_public", True),
-                            })
-                        if voices:
-                            return {"voices": voices}
-        except Exception as exc:
-            logger.warning(f"Could not fetch Cartesia voices: {exc}")
-    return {"voices": default_voices}
+            "is_shared": False,
+            "is_own_clone": False,
+            "category": "A2Z Recommended",
+            "owner_workspace_id": None,
+            "royalty_rate_cents_per_min": 0,
+        })
+
+    # 2. Fetch admin-uploaded voices from Cartesia API (cached 5 min)
+    now = _time_mod.time()
+    if now - _voices_cache[0] < _VOICES_CACHE_TTL:
+        cartesia_account_voices = _voices_cache[1]
+    else:
+        cartesia_account_voices = []
+        cartesia_key = os.getenv("CARTESIA_API_KEY", "")
+        if cartesia_key:
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        "https://api.cartesia.ai/voices",
+                        headers={"X-API-Key": cartesia_key, "Cartesia-Version": "2024-06-10"},
+                    )
+                    if resp.status_code == 200:
+                        all_voices = resp.json()
+                        if isinstance(all_voices, list):
+                            # Filter: only our account voices (is_public=False or owned by us), exclude curated
+                            cartesia_account_voices = [
+                                v for v in all_voices
+                                if v.get("id") not in curated_ids and not v.get("is_public", True)
+                            ]
+                _voices_cache = (_time_mod.time(), cartesia_account_voices)
+            except Exception as _e:
+                logger.warning(f"Cartesia API fetch failed: {_e}")
+
+    for cv in cartesia_account_voices:
+        voices.append({
+            "id": cv.get("id", ""),
+            "name": cv.get("name", "Unnamed"),
+            "description": cv.get("description", "Admin-uploaded voice"),
+            "gender": cv.get("gender", "unknown"),
+            "is_default": False,
+            "is_curated": False,
+            "is_cloned": True,
+            "is_shared": False,
+            "is_own_clone": False,
+            "category": "A2Z Recommended",
+            "owner_workspace_id": None,
+            "royalty_rate_cents_per_min": 0,
+        })
+
+    # 3. Shared agent clones from database
+    try:
+        shared_clones = session.exec(
+            select(AgentVoiceClone).where(
+                AgentVoiceClone.is_shared == True,
+                AgentVoiceClone.status == "active",
+            )
+        ).all()
+        for sc in shared_clones:
+            if sc.workspace_id == user.workspace_id:
+                continue  # Own clone handled separately
+            voices.append({
+                "id": sc.elevenlabs_voice_id or "",
+                "name": getattr(sc, "display_name_public", None) or sc.display_name or "Agent Voice",
+                "description": "Agent voice — earns royalties for the owner",
+                "gender": "unknown",
+                "is_default": False,
+                "is_curated": False,
+                "is_cloned": True,
+                "is_shared": True,
+                "is_own_clone": False,
+                "category": "Agent Voices",
+                "owner_workspace_id": sc.workspace_id,
+                "royalty_rate_cents_per_min": getattr(sc, "royalty_rate_cents_per_min", 1),
+            })
+    except Exception as _e:
+        logger.warning(f"Shared clones fetch failed: {_e}")
+
+    # 4. Agent's own clone (if active)
+    try:
+        own_clone = session.exec(
+            select(AgentVoiceClone).where(
+                AgentVoiceClone.workspace_id == user.workspace_id,
+                AgentVoiceClone.status == "active",
+            )
+        ).first()
+        if own_clone and own_clone.elevenlabs_voice_id:
+            voices.append({
+                "id": own_clone.elevenlabs_voice_id,
+                "name": own_clone.display_name or "My Voice",
+                "description": "Your cloned voice",
+                "gender": "unknown",
+                "is_default": False,
+                "is_curated": False,
+                "is_cloned": True,
+                "is_shared": getattr(own_clone, "is_shared", False),
+                "is_own_clone": True,
+                "category": "Your Voice",
+                "owner_workspace_id": user.workspace_id,
+                "royalty_rate_cents_per_min": 0,
+            })
+    except Exception as _e:
+        logger.warning(f"Own clone fetch failed: {_e}")
+
+    return {"voices": voices}
+
+
+@app.get("/voices/{voice_id}/preview")
+async def preview_voice(
+    voice_id: str,
+    user: User = Depends(get_current_user),
+) -> Response:
+    """Generate a short TTS audio sample for voice preview. Returns MP3."""
+    sample_text = (
+        "Hi, is this the homeowner? This is Sarah calling — "
+        "I'm a local Realtor and I noticed your property was "
+        "recently on the market. Do you have just 60 seconds?"
+    )
+    cartesia_key = os.getenv("CARTESIA_API_KEY", "")
+    if not cartesia_key:
+        raise HTTPException(status_code=503, detail="Voice preview unavailable")
+
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.cartesia.ai/tts/bytes",
+            headers={
+                "X-API-Key": cartesia_key,
+                "Cartesia-Version": "2024-06-10",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model_id": "sonic-3",
+                "voice": {"mode": "id", "id": voice_id},
+                "output_format": {
+                    "container": "mp3",
+                    "encoding": "mp3",
+                    "sample_rate": 44100,
+                },
+                "transcript": sample_text,
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Cartesia error: {resp.status_code}")
+    return Response(
+        content=resp.content,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 @app.post("/worker/run-once")

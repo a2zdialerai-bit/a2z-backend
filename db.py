@@ -48,6 +48,11 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP",
+            "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS is_shared BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS display_name_public VARCHAR(255)",
+            "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS royalty_rate_cents_per_min INTEGER DEFAULT 1",
+            "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS total_minutes_used INTEGER DEFAULT 0",
+            "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS total_royalties_earned_cents INTEGER DEFAULT 0",
         ]:
             try:
                 conn.execute(text(sql))

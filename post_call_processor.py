@@ -10,7 +10,7 @@ from typing import Optional, Any
 
 from sqlmodel import Session, select
 
-from models import AgentProfile, CallLog, Campaign, Lead, MarketplaceListing, Workspace
+from models import AgentProfile, AgentVoiceClone, CallLog, Campaign, Lead, MarketplaceListing, PartnerPayout, Workspace
 
 logger = logging.getLogger("a2z.post_call")
 
@@ -188,6 +188,37 @@ def process_completed_call(
         if campaign:
             campaign.marketplace_listings_count = getattr(campaign, "marketplace_listings_count", 0) + 1
             session.add(campaign)
+
+    # Voice royalty tracking — look up shared voice via campaign's agent_voice_clone_id
+    if campaign and getattr(campaign, "agent_voice_clone_id", None):
+        try:
+            shared_voice = session.exec(
+                select(AgentVoiceClone).where(
+                    AgentVoiceClone.id == campaign.agent_voice_clone_id,
+                    AgentVoiceClone.is_shared == True,
+                )
+            ).first()
+            if shared_voice and shared_voice.workspace_id != call_log.workspace_id:
+                duration_minutes = (call_log.duration_seconds or 0) / 60
+                rate = getattr(shared_voice, "royalty_rate_cents_per_min", 1)
+                royalty_cents = int(duration_minutes * rate)
+                if royalty_cents > 0:
+                    shared_voice.total_royalties_earned_cents = getattr(shared_voice, "total_royalties_earned_cents", 0) + royalty_cents
+                    shared_voice.total_minutes_used = getattr(shared_voice, "total_minutes_used", 0) + int(duration_minutes)
+                    session.add(shared_voice)
+                    payout = PartnerPayout(
+                        workspace_id=shared_voice.workspace_id,
+                        payout_type="voice_royalty",
+                        gross_amount_cents=royalty_cents,
+                        net_amount_cents=royalty_cents,
+                        platform_fee_cents=0,
+                        status="pending",
+                        currency="usd",
+                    )
+                    session.add(payout)
+                    logger.info(f"Voice royalty: {royalty_cents}¢ for clone {shared_voice.id}")
+        except Exception as _re:
+            logger.warning(f"Royalty tracking failed: {_re}")
 
     session.commit()
     logger.info(
