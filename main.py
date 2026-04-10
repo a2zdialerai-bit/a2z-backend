@@ -3071,6 +3071,19 @@ async def twilio_stream(
 ) -> None:
     await websocket.accept()
 
+    # Look up workspace preferred voice
+    preferred_voice_id: Optional[str] = None
+    if workspace_id:
+        try:
+            from db import engine as _engine
+            from sqlmodel import Session as _Sess
+            with _Sess(_engine) as _ws_sess:
+                _ws = _ws_sess.get(Workspace, workspace_id)
+                if _ws:
+                    preferred_voice_id = getattr(_ws, "preferred_voice_id", None)
+        except Exception:
+            pass
+
     bridge = RealtimeBridge(
         workspace_id=workspace_id,
         campaign_id=campaign_id,
@@ -3078,6 +3091,7 @@ async def twilio_stream(
         pathway_id=pathway_id,
         calllog_id=calllog_id,
         voice_mode=settings.voice_mode_default,
+        preferred_voice_id=preferred_voice_id,
     )
     await bridge.start()
 

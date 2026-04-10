@@ -97,6 +97,7 @@ class RealtimeBridge:
         voice_mode: str = "realtime",
         agent_name: str = "Alex",
         brokerage_name: str = "your brokerage",
+        preferred_voice_id: Optional[str] = None,
     ) -> None:
         self.workspace_id = workspace_id
         self.campaign_id = campaign_id
@@ -104,6 +105,7 @@ class RealtimeBridge:
         self.pathway_id = pathway_id
         self.calllog_id = calllog_id
         self.voice_mode = voice_mode or settings.voice_mode_default
+        self.preferred_voice_id = preferred_voice_id
 
         self.stream_sid: Optional[str] = None
         self.call_sid: Optional[str] = None
@@ -539,10 +541,14 @@ class RealtimeBridge:
         if VOICE_PROVIDER == "cartesia":
             try:
                 from cartesia_tts import stream_tts  # type: ignore
+                resolved_voice_id = (
+                    voice_id if voice_id and voice_id != "dev_placeholder"
+                    else self.preferred_voice_id or None
+                )
                 chunks: list[bytes] = []
                 async for chunk in stream_tts(
                     text=text,
-                    voice_id=voice_id if voice_id and voice_id != "dev_placeholder" else None,
+                    voice_id=resolved_voice_id,
                     emotional_state=emotional_state,
                 ):
                     if self._ai_cancel_requested:

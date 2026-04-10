@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Optional, Any
 
 from sqlmodel import Session, select
 
-from models import CallLog, Campaign, Lead, MarketplaceListing
+from models import AgentProfile, CallLog, Campaign, Lead, MarketplaceListing, Workspace
 
 logger = logging.getLogger("a2z.post_call")
 
@@ -192,3 +194,45 @@ def process_completed_call(
         f"Post-call processing complete for CallLog {call_log_id}: "
         f"disposition={disposition}, readiness={readiness_score}"
     )
+
+    # Top Agent SMS: send profile link to homeowner 10 min after non-booked calls
+    from config import settings as _settings
+    if (
+        _settings.top_agent_sms_follow_up_enabled
+        and disposition != "booked_appointment"
+        and disposition not in ("opted_out", "wrong_number")
+        and lead
+        and lead.phone
+        and call_log.workspace_id
+    ):
+        delay_seconds = _settings.top_agent_sms_delay_minutes * 60
+
+        def _send_top_agent_sms() -> None:
+            time.sleep(delay_seconds)
+            try:
+                from db import session_scope
+                from notifications import send_sms
+                with session_scope() as _sess:
+                    workspace = _sess.get(Workspace, call_log.workspace_id)
+                    if not workspace:
+                        return
+                    agent_profile = _sess.exec(
+                        select(AgentProfile).where(AgentProfile.workspace_id == call_log.workspace_id)
+                    ).first()
+                    if not agent_profile:
+                        return
+                    agent_name = agent_profile.full_name or workspace.name or "your agent"
+                    brokerage = agent_profile.brokerage or workspace.name or "A2Z Realty"
+                    slug = (agent_profile.primary_territory_key or "").strip("/")
+                    profile_url = f"a2zdialer.com/agents/{slug}" if slug else "a2zdialer.com"
+                    homeowner_first = (lead.first_name or lead.homeowner_name or "there").split()[0]
+                    body = (
+                        f"Hi {homeowner_first} — this is {agent_name} from {brokerage}. "
+                        f"Here is my profile when the timing is right: {profile_url}"
+                    )
+                    result = send_sms(workspace, lead.phone, body)
+                    logger.info(f"Top Agent SMS to lead {lead.id}: {result}")
+            except Exception:
+                logger.exception(f"Top Agent SMS failed for lead {lead.id}")
+
+        threading.Thread(target=_send_top_agent_sms, daemon=True).start()
