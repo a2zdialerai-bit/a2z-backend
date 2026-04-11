@@ -62,6 +62,10 @@ def build_initial_context(
     pathway: Pathway,
 ) -> Dict[str, Any]:
     identity = resolve_caller_identity(workspace, campaign)
+    homeowner_first = lead.first_name or (lead.homeowner_name or "").split()[0] if (lead.homeowner_name or lead.first_name) else "there"
+    homeowner_name = lead.homeowner_name or (
+        f"{lead.first_name or ''} {lead.last_name or ''}".strip() or "there"
+    )
     return {
         "lead_id": lead.id,
         "campaign_id": campaign.id,
@@ -71,17 +75,25 @@ def build_initial_context(
         "caller_name": identity["caller_name"],
         "caller_title": identity["caller_title"],
         "brokerage_name": identity["brokerage_name"],
-        "homeowner_name": lead.homeowner_name or lead.first_name or "there",
+        # agent_name alias used in pathway {{agent_name}} templates
+        "agent_name": identity["caller_name"],
+        "agent_title": identity["caller_title"],
+        "agent_brokerage": identity["brokerage_name"],
+        "homeowner_name": homeowner_name,
+        "homeowner_first_name": homeowner_first,
+        "homeowner_last_name": lead.last_name or "",
         "first_name": lead.first_name or "",
         "last_name": lead.last_name or "",
         "phone": lead.phone,
         "email": lead.email or "",
-        "property_address": lead.property_address or "",
+        "property_address": lead.property_address or "your property",
         "city": lead.city or "",
         "state": lead.state or "",
         "postal_code": lead.postal_code or "",
         "listing_status": lead.listing_status or "",
         "lead_source": lead.lead_source or "",
+        "days_expired": str(getattr(lead, "days_expired", "") or ""),
+        "list_price": str(getattr(lead, "last_list_price", "") or ""),
     }
 
 

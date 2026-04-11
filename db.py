@@ -53,6 +53,8 @@ def init_db() -> None:
             "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS royalty_rate_cents_per_min INTEGER DEFAULT 1",
             "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS total_minutes_used INTEGER DEFAULT 0",
             "ALTER TABLE agentvoiceclone ADD COLUMN IF NOT EXISTS total_royalties_earned_cents INTEGER DEFAULT 0",
+            "ALTER TABLE leads ADD COLUMN IF NOT EXISTS days_expired INTEGER",
+            "ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_list_price VARCHAR(60)",
         ]:
             try:
                 conn.execute(text(sql))

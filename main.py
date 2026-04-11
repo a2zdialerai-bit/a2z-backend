@@ -1551,6 +1551,8 @@ async def upload_csv(
             lead_source=(row.get("lead_source") or row.get("source") or "expired_listing").strip(),
             listing_status=(row.get("listing_status") or "").strip() or None,
             listing_status_raw=(row.get("listing_status_raw") or "").strip() or None,
+            days_expired=int(row["days_expired"]) if (row.get("days_expired") or "").strip().isdigit() else None,
+            last_list_price=(row.get("last_list_price") or row.get("list_price") or "").strip() or None,
             raw_data_json=json_dumps(row),
             extracted_json="{}",
         )
@@ -1976,6 +1978,111 @@ def pause_campaign(
     return {"ok": True, "campaign_id": row.id, "status": row.status}
 
 
+@app.get("/campaigns/{campaign_id}/preview-script")
+def preview_campaign_script(
+    campaign_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Preview the full system prompt + opening line for this campaign using the first lead."""
+    from system_prompt import build_system_prompt
+    from twilio_voice import build_initial_context, resolve_caller_identity
+
+    campaign = get_campaign_or_404(session, user.workspace_id, campaign_id)
+    workspace = get_workspace_or_404(session, user.workspace_id)
+    pathway = session.get(Pathway, campaign.pathway_id) if campaign.pathway_id else None
+
+    # Get first lead from the campaign's lead list
+    lead = None
+    if campaign.lead_list_id:
+        lead = session.exec(
+            select(Lead)
+            .where(Lead.lead_list_id == campaign.lead_list_id, Lead.workspace_id == user.workspace_id)
+            .order_by(Lead.id.asc())
+        ).first()
+
+    # Build context
+    identity = resolve_caller_identity(workspace, campaign)
+    agent_name = identity["caller_name"]
+    brokerage = identity["brokerage_name"]
+    agent_title = identity["caller_title"]
+
+    homeowner_first = "there"
+    homeowner_name = "Homeowner"
+    property_address = "the property"
+    city = ""
+    state = ""
+    days_expired = None
+    list_price = None
+
+    if lead:
+        homeowner_first = lead.first_name or (lead.homeowner_name or "").split()[0] or "there"
+        homeowner_name = lead.homeowner_name or f"{lead.first_name or ''} {lead.last_name or ''}".strip() or "Homeowner"
+        property_address = lead.property_address or "the property"
+        city = lead.city or ""
+        state = lead.state or ""
+        days_expired = getattr(lead, "days_expired", None)
+        list_price = getattr(lead, "last_list_price", None)
+
+    system_prompt = build_system_prompt(
+        agent_name=agent_name,
+        agent_brokerage=brokerage,
+        agent_title=agent_title,
+        homeowner_first_name=homeowner_first,
+        homeowner_last_name=lead.last_name if lead else "",
+        homeowner_name=homeowner_name,
+        property_address=property_address,
+        property_city=city,
+        property_state=state,
+        days_expired=days_expired,
+        list_price=list_price,
+    )
+
+    # Build opening line from pathway start node
+    opening_line = f"Hi, is this {homeowner_first}? This is {agent_name} calling from {brokerage}."
+    if pathway:
+        try:
+            from pathway_engine import render_prompt, safe_json_load
+            pathway_obj = safe_json_load(pathway.json_def)
+            start_node_id = pathway_obj.get("start_node")
+            if start_node_id:
+                node = pathway_obj.get("nodes", {}).get(start_node_id, {})
+                prompt_template = node.get("prompt", "")
+                if prompt_template:
+                    ctx = {
+                        "agent_name": agent_name,
+                        "caller_name": agent_name,
+                        "brokerage_name": brokerage,
+                        "agent_brokerage": brokerage,
+                        "homeowner_name": homeowner_name,
+                        "homeowner_first_name": homeowner_first,
+                        "first_name": homeowner_first,
+                        "property_address": property_address,
+                        "city": city,
+                        "state": state,
+                        "days_expired": str(days_expired or ""),
+                        "list_price": str(list_price or ""),
+                    }
+                    opening_line = render_prompt(prompt_template, ctx)
+        except Exception:
+            pass
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.name,
+        "agent_name": agent_name,
+        "brokerage": brokerage,
+        "lead_used": {
+            "id": lead.id if lead else None,
+            "name": homeowner_name,
+            "phone": lead.phone if lead else None,
+            "property_address": property_address,
+        },
+        "opening_line": opening_line,
+        "system_prompt": system_prompt,
+    }
+
+
 @app.post("/campaigns/{campaign_id}/voicemail-drop")
 def voicemail_drop(
     campaign_id: int,
@@ -2378,72 +2485,74 @@ def update_workspace_settings(
 CURATED_VOICES = [
     {
         "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
-        "name": "Sarah",
-        "description": "Warm, professional female — top performer for expired listings",
+        "name": "Brooke",
+        "description": "Confident, natural female — top pick for expired listings",
         "gender": "female",
         "is_default": True,
         "is_curated": True,
         "category": "A2Z Recommended",
-    },
-    {
-        "id": "228fca29-3a0a-435c-8728-5cb483251068",
-        "name": "Michael",
-        "description": "Steady, trustworthy male — builds instant rapport",
-        "gender": "male",
-        "is_default": True,
-        "is_curated": True,
-        "category": "A2Z Recommended",
+        "accent": "English American",
     },
     {
         "id": "694f9389-aac1-45b6-b726-9d9369183238",
         "name": "Jacqueline",
-        "description": "Confident, empathetic female — great for skeptical homeowners",
+        "description": "Reassuring, empathetic female — great for skeptical homeowners",
         "gender": "female",
+        "is_default": False,
         "is_curated": True,
         "category": "A2Z Recommended",
+        "accent": "English American",
     },
     {
         "id": "5c42302c-194b-4d0c-ba1a-8cb485c84ab9",
-        "name": "Ross",
-        "description": "Reliable, clear male — professional and approachable",
-        "gender": "male",
-        "is_curated": True,
-        "category": "A2Z Recommended",
-    },
-    {
-        "id": "b7d50908-b17c-442d-ad8d-810c63997ed9",
-        "name": "Brooke",
-        "description": "Confident, conversational female — natural and engaging",
+        "name": "Katie",
+        "description": "Friendly, clear female — warm and approachable",
         "gender": "female",
+        "is_default": False,
         "is_curated": True,
         "category": "A2Z Recommended",
+        "accent": "English American",
     },
     {
         "id": "c2ac25f9-ecc4-4f56-9095-651354df60c9",
         "name": "Ronald",
-        "description": "Deep, calm male — commands attention and trust",
+        "description": "Deep, intense male — commands attention and trust",
         "gender": "male",
+        "is_default": False,
         "is_curated": True,
         "category": "A2Z Recommended",
+        "accent": "English American",
+    },
+    {
+        "id": "1e25d897-2d9e-4665-9f02-5a9e934c9a04",
+        "name": "Blake",
+        "description": "Energetic, helpful male — engaging and professional",
+        "gender": "male",
+        "is_default": False,
+        "is_curated": True,
+        "category": "A2Z Recommended",
+        "accent": "English American",
+    },
+    {
+        "id": "a8a1eb38-5f15-4c1d-8722-7ac0f329727d",
+        "name": "Cathy",
+        "description": "Friendly, casual female — natural and relatable",
+        "gender": "female",
+        "is_default": False,
+        "is_curated": True,
+        "category": "A2Z Recommended",
+        "accent": "English American",
     },
 ]
-
-# Simple in-process cache: (timestamp, data)
-_voices_cache: tuple[float, list] = (0.0, [])
-_VOICES_CACHE_TTL = 300  # 5 minutes
 
 @app.get("/voices/available")
 async def get_available_voices(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    global _voices_cache
-    import time as _time_mod
-
     voices: list[dict] = []
 
-    # 1. Always include curated voices first
-    curated_ids = {v["id"] for v in CURATED_VOICES}
+    # 1. Curated English American voices — always first, hardcoded
     for v in CURATED_VOICES:
         voices.append({
             "id": v["id"],
@@ -2460,50 +2569,7 @@ async def get_available_voices(
             "royalty_rate_cents_per_min": 0,
         })
 
-    # 2. Fetch admin-uploaded voices from Cartesia API (cached 5 min)
-    now = _time_mod.time()
-    if now - _voices_cache[0] < _VOICES_CACHE_TTL:
-        cartesia_account_voices = _voices_cache[1]
-    else:
-        cartesia_account_voices = []
-        cartesia_key = os.getenv("CARTESIA_API_KEY", "")
-        if cartesia_key:
-            try:
-                import httpx as _httpx
-                async with _httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(
-                        "https://api.cartesia.ai/voices",
-                        headers={"X-API-Key": cartesia_key, "Cartesia-Version": "2024-06-10"},
-                    )
-                    if resp.status_code == 200:
-                        all_voices = resp.json()
-                        if isinstance(all_voices, list):
-                            # Filter: only our account voices (is_public=False or owned by us), exclude curated
-                            cartesia_account_voices = [
-                                v for v in all_voices
-                                if v.get("id") not in curated_ids and not v.get("is_public", True)
-                            ]
-                _voices_cache = (_time_mod.time(), cartesia_account_voices)
-            except Exception as _e:
-                logger.warning(f"Cartesia API fetch failed: {_e}")
-
-    for cv in cartesia_account_voices:
-        voices.append({
-            "id": cv.get("id", ""),
-            "name": cv.get("name", "Unnamed"),
-            "description": cv.get("description", "Admin-uploaded voice"),
-            "gender": cv.get("gender", "unknown"),
-            "is_default": False,
-            "is_curated": False,
-            "is_cloned": True,
-            "is_shared": False,
-            "is_own_clone": False,
-            "category": "A2Z Recommended",
-            "owner_workspace_id": None,
-            "royalty_rate_cents_per_min": 0,
-        })
-
-    # 3. Shared agent clones from database
+    # 2. Shared agent clones from database
     try:
         shared_clones = session.exec(
             select(AgentVoiceClone).where(
@@ -2567,9 +2633,10 @@ async def preview_voice(
 ) -> Response:
     """Generate a short TTS audio sample for voice preview. Returns MP3."""
     sample_text = (
-        "Hi, is this the homeowner? This is Sarah calling — "
-        "I'm a local Realtor and I noticed your property was "
-        "recently on the market. Do you have just 60 seconds?"
+        "Hi, is this the homeowner? This is calling — "
+        "I'm a local Realtor and I noticed your property was recently on the market. "
+        "I specialize in homes that haven't sold yet. "
+        "Do you have just 60 seconds?"
     )
     cartesia_key = os.getenv("CARTESIA_API_KEY", "")
     if not cartesia_key:
@@ -3244,8 +3311,10 @@ async def twilio_stream(
 ) -> None:
     await websocket.accept()
 
-    # Look up workspace preferred voice
+    # Look up workspace + campaign for agent persona and preferred voice
     preferred_voice_id: Optional[str] = None
+    _agent_name: str = "your agent"
+    _brokerage_name: str = "our brokerage"
     if workspace_id:
         try:
             from db import engine as _engine
@@ -3254,6 +3323,25 @@ async def twilio_stream(
                 _ws = _ws_sess.get(Workspace, workspace_id)
                 if _ws:
                     preferred_voice_id = getattr(_ws, "preferred_voice_id", None)
+                    _agent_name = (
+                        _ws.default_agent_name
+                        or _ws.brand_name
+                        or _ws.name
+                        or "your agent"
+                    )
+                    _brokerage_name = (
+                        _ws.default_brokerage_name
+                        or _ws.brand_name
+                        or _ws.name
+                        or "our brokerage"
+                    )
+                if campaign_id:
+                    _camp = _ws_sess.get(Campaign, campaign_id)
+                    if _camp:
+                        if _camp.caller_name:
+                            _agent_name = _camp.caller_name
+                        if _camp.brokerage_name:
+                            _brokerage_name = _camp.brokerage_name
         except Exception:
             pass
 
@@ -3264,6 +3352,8 @@ async def twilio_stream(
         pathway_id=pathway_id,
         calllog_id=calllog_id,
         voice_mode=settings.voice_mode_default,
+        agent_name=_agent_name,
+        brokerage_name=_brokerage_name,
         preferred_voice_id=preferred_voice_id,
     )
     await bridge.start()

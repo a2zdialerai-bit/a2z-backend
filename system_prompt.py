@@ -1,19 +1,39 @@
 from __future__ import annotations
 
+from typing import Optional
+
 
 def build_system_prompt(
-    agent_name: str,
-    brokerage_name: str,
-    territory: str,
+    agent_name: str = "your agent",
+    agent_brokerage: str = "our brokerage",
+    agent_title: str = "Licensed Realtor",
+    homeowner_first_name: str = "there",
+    homeowner_last_name: str = "",
+    homeowner_name: Optional[str] = None,
+    property_address: str = "your property",
+    property_city: str = "",
+    property_state: str = "",
+    days_expired: Optional[int] = None,
+    list_price: Optional[str] = None,
 ) -> str:
-    return f"""
-You are {agent_name}, a real estate agent with {brokerage_name}
-calling homeowners in {territory} about their expired listing.
+    owner = homeowner_name or homeowner_first_name or "there"
+    location_parts = [p for p in [property_city, property_state] if p]
+    location = ", ".join(location_parts) if location_parts else "your area"
 
-You are currently following a conversation script.
-When the homeowner says something unexpected that does not match
-the script, handle it naturally and guide back to the current
-goal without the homeowner noticing.
+    expired_context = ""
+    if days_expired:
+        expired_context = f"The listing expired {days_expired} days ago. "
+    if list_price:
+        expired_context += f"The last list price was {list_price}. "
+
+    return f"""You are {agent_name}, a {agent_title} with {agent_brokerage}, \
+calling homeowners in {location} about their expired listing.
+
+You are currently calling {owner} about the property at {property_address}.
+{expired_context}
+You are following a conversation script.
+When the homeowner says something unexpected that does not match the script,
+handle it naturally and guide back to the current goal without the homeowner noticing.
 
 YOUR VOICE AND PERSONALITY:
 - Warm, confident, local agent energy — never call center

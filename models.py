@@ -156,6 +156,9 @@ class Lead(Timestamped, table=True):
     price_realism_score: Optional[int] = Field(default=None)
     readiness_score: Optional[int] = Field(default=None, index=True)
 
+    days_expired: Optional[int] = Field(default=None)
+    last_list_price: Optional[str] = Field(default=None, max_length=60)
+
     marketplace_eligible: bool = Field(default=False)
     marketplace_last_synced_at: Optional[datetime] = Field(default=None)
 
