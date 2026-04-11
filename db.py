@@ -56,6 +56,33 @@ def init_db() -> None:
             "ALTER TABLE leads ADD COLUMN IF NOT EXISTS days_expired INTEGER",
             "ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_list_price VARCHAR(60)",
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS agent_callback_number VARCHAR(20)",
+            # Admin campaign fields
+            "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS marketplace_fee_pct INTEGER DEFAULT 40",
+            "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS auto_list_threshold INTEGER DEFAULT 80",
+            "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS ai_handles_callbacks BOOLEAN DEFAULT FALSE",
+            # Stripe billing
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255)",
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS billing_cycle_start TIMESTAMP",
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS overage_charges_cents INTEGER DEFAULT 0",
+            # Webhooks
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS webhook_url VARCHAR(500)",
+            # Call recordings
+            "ALTER TABLE calllogs ADD COLUMN IF NOT EXISTS recording_url VARCHAR(500)",
+            "ALTER TABLE calllogs ADD COLUMN IF NOT EXISTS recording_duration_seconds INTEGER",
+            "ALTER TABLE calllogs ADD COLUMN IF NOT EXISTS readiness_score INTEGER",
+            "ALTER TABLE calllogs ADD COLUMN IF NOT EXISTS is_admin_campaign BOOLEAN DEFAULT FALSE",
+            # Referrals table
+            """CREATE TABLE IF NOT EXISTS referrals (
+                id SERIAL PRIMARY KEY,
+                referrer_workspace_id INTEGER NOT NULL,
+                referred_workspace_id INTEGER,
+                referred_email VARCHAR(255),
+                status VARCHAR(50) DEFAULT 'pending',
+                reward_months INTEGER DEFAULT 1,
+                reward_applied BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )""",
         ]:
             try:
                 conn.execute(text(sql))

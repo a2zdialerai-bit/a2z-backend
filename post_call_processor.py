@@ -71,6 +71,20 @@ def get_disposition_from_transcript(transcript: dict) -> str:
     return "not_interested"
 
 
+def get_auto_list_threshold(campaign: Any = None) -> int:
+    """Admin campaigns list more inventory at score >= 75; agents at >= 80."""
+    if campaign and getattr(campaign, "is_admin_campaign", False):
+        return 75
+    return 80
+
+
+def get_platform_fee_pct(campaign: Any = None) -> int:
+    """Admin campaigns keep 100% (0% fee); agent campaigns pay 40%."""
+    if campaign and getattr(campaign, "is_admin_campaign", False):
+        return 0
+    return 40
+
+
 def process_completed_call(
     call_log_id: int,
     session: Session,
@@ -117,11 +131,20 @@ def process_completed_call(
         else:
             return 8500   # $85 (for 80-85)
 
+    # Determine campaign early (needed for thresholds)
+    campaign = session.get(Campaign, call_log.campaign_id) if call_log.campaign_id else None
+    is_admin_campaign = bool(campaign and getattr(campaign, "is_admin_campaign", False))
+
+    # Dynamic threshold: 75 for admin, 80 for agents
+    auto_list_threshold = get_auto_list_threshold(campaign)
+    platform_fee_pct = get_platform_fee_pct(campaign)
+    seller_payout_pct = 100 - platform_fee_pct
+
     # Update lead
     if lead:
         lead.readiness_score = readiness_score
         lead.marketplace_eligible = (
-            readiness_score >= 80
+            readiness_score >= auto_list_threshold
             and disposition not in ("opted_out", "wrong_number")
         )
         session.add(lead)
@@ -130,19 +153,7 @@ def process_completed_call(
     call_log.disposition = disposition
     session.add(call_log)
 
-    # Determine if this is an admin campaign
-    campaign = session.get(Campaign, call_log.campaign_id) if call_log.campaign_id else None
-    is_admin_campaign = bool(campaign and getattr(campaign, "is_admin_campaign", False))
-
-    # Platform fee: 0% for admin campaigns, 40% for client agents
-    if is_admin_campaign:
-        platform_fee_pct = 0
-        seller_payout_pct = 100
-    else:
-        platform_fee_pct = 40
-        seller_payout_pct = 60
-
-    # Auto-create marketplace listing if eligible (readiness >= 80)
+    # Auto-create marketplace listing if eligible
     if lead and lead.marketplace_eligible:
         listing_type = "booked_appointment" if disposition == "booked_appointment" else "qualified_lead"
         base_price = _price_by_score(readiness_score)
@@ -189,7 +200,7 @@ def process_completed_call(
             campaign.marketplace_listings_count = getattr(campaign, "marketplace_listings_count", 0) + 1
             session.add(campaign)
 
-    # Voice royalty tracking — look up shared voice via campaign's agent_voice_clone_id
+    # Voice royalty tracking
     if campaign and getattr(campaign, "agent_voice_clone_id", None):
         try:
             shared_voice = session.exec(
@@ -267,3 +278,36 @@ def process_completed_call(
                 logger.exception(f"Top Agent SMS failed for lead {lead.id}")
 
         threading.Thread(target=_send_top_agent_sms, daemon=True).start()
+
+
+def process_admin_callback_result(call_log_id: int, new_score: int, session: Session) -> None:
+    """After AI handles an admin callback, update score and send admin SMS summary."""
+    call_log = session.get(CallLog, call_log_id)
+    if not call_log:
+        return
+    lead = session.get(Lead, call_log.lead_id) if call_log.lead_id else None
+    workspace = session.get(Workspace, call_log.workspace_id) if call_log.workspace_id else None
+
+    if lead:
+        lead.readiness_score = new_score
+        lead.marketplace_eligible = new_score >= 75
+        session.add(lead)
+        session.commit()
+        logger.info(f"Admin callback: lead {lead.id} updated score={new_score}")
+
+    if workspace and getattr(workspace, "agent_callback_number", None):
+        try:
+            from notifications import send_sms
+            first = lead.first_name or "" if lead else ""
+            last = lead.last_name or "" if lead else ""
+            address = (lead.property_address or "") if lead else ""
+            listed = "✅ Listed on marketplace" if new_score >= 75 else "❌ Score too low — not listed"
+            send_sms(workspace, workspace.agent_callback_number, (
+                f"📋 Callback handled by AI\n"
+                f"Homeowner: {first} {last}\n"
+                f"Property: {address}\n"
+                f"New score: {new_score}/100\n"
+                f"{listed}"
+            ))
+        except Exception:
+            logger.exception("Admin callback SMS summary failed")

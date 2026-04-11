@@ -83,6 +83,14 @@ class Workspace(Timestamped, table=True):
     # Callback forwarding: when homeowners call back, forward to this number
     agent_callback_number: Optional[str] = Field(default=None, max_length=20)
 
+    # Stripe billing
+    stripe_subscription_id: Optional[str] = Field(default=None, max_length=255)
+    billing_cycle_start: Optional[datetime] = Field(default=None)
+    overage_charges_cents: int = Field(default=0)
+
+    # Webhooks / integrations
+    webhook_url: Optional[str] = Field(default=None, max_length=500)
+
 
 class User(Timestamped, table=True):
     __tablename__ = "users"
@@ -245,6 +253,9 @@ class Campaign(Timestamped, table=True):
     is_admin_campaign: bool = Field(default=False)
     marketplace_listings_count: int = Field(default=0)
     marketplace_revenue_cents: int = Field(default=0)
+    marketplace_fee_pct: Optional[int] = Field(default=40)
+    auto_list_threshold: Optional[int] = Field(default=80)
+    ai_handles_callbacks: bool = Field(default=False)
 
 
 class CallLog(Timestamped, table=True):
@@ -284,6 +295,23 @@ class CallLog(Timestamped, table=True):
 
     marketplace_candidate: bool = Field(default=False)
     marketplace_synced_at: Optional[datetime] = Field(default=None)
+
+    recording_url: Optional[str] = Field(default=None, max_length=500)
+    recording_duration_seconds: Optional[int] = Field(default=None)
+    readiness_score: Optional[int] = Field(default=None)
+    is_admin_campaign: bool = Field(default=False)
+
+
+class Referral(Timestamped, table=True):
+    __tablename__ = "referrals"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    referrer_workspace_id: int = Field(index=True)
+    referred_workspace_id: Optional[int] = Field(default=None, index=True)
+    referred_email: Optional[str] = Field(default=None, max_length=255)
+    status: str = Field(default="pending", max_length=50)
+    reward_months: int = Field(default=1)
+    reward_applied: bool = Field(default=False)
 
 
 class Appointment(Timestamped, table=True):

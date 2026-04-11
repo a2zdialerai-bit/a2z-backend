@@ -45,6 +45,7 @@ from models import (
     PartnerPayout,
     Pathway,
     PasswordResetToken,
+    Referral,
     RefreshToken,
     SavedTerritory,
     ScriptAsset,
@@ -1088,7 +1089,7 @@ def make_me_admin_temp(session: Session = Depends(get_session)):
 
 @app.post("/auth/register")
 @limiter.limit("5/minute")
-def register(request: Request, payload: AuthRegisterIn = Body(...), session: Session = Depends(get_session)) -> dict:
+def register(request: Request, payload: AuthRegisterIn = Body(...), ref: Optional[str] = Query(default=None), session: Session = Depends(get_session)) -> dict:
     existing = session.exec(select(User).where(User.email == payload.email.lower().strip())).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -1142,6 +1143,23 @@ def register(request: Request, payload: AuthRegisterIn = Body(...), session: Ses
         entity_id=workspace.id,
         details={"email": user.email},
     )
+
+    # Referral tracking
+    if ref:
+        referrer_ws = session.exec(select(Workspace).where(Workspace.slug == ref)).first()
+        if referrer_ws and referrer_ws.id != workspace.id:
+            referral = Referral(
+                referrer_workspace_id=referrer_ws.id,
+                referred_workspace_id=workspace.id,
+                referred_email=user.email,
+                status="converted",
+            )
+            session.add(referral)
+            # Award 1 free month to referrer (extend billing cycle by 30 days)
+            if referrer_ws.billing_cycle_start:
+                from datetime import timedelta
+                referrer_ws.billing_cycle_start = referrer_ws.billing_cycle_start - timedelta(days=30)
+                session.add(referrer_ws)
 
     session.commit()
     session.refresh(user)
@@ -1955,6 +1973,10 @@ def start_campaign(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
+    workspace = get_workspace_or_404(session, user.workspace_id)
+    # Plan enforcement: require an active subscription
+    if workspace.subscription_status not in ("active", "trialing") and not getattr(workspace, "is_admin_workspace", False):
+        raise HTTPException(status_code=402, detail="Active subscription required to run campaigns.")
     row = get_campaign_or_404(session, user.workspace_id, campaign_id)
     row.status = "running"
     row.next_run_at = utcnow()
@@ -2823,6 +2845,7 @@ async def billing_webhook(request: Request) -> dict:
                     ).first()
                     if workspace and plan:
                         _apply_plan_to_workspace(workspace, plan)
+                        workspace.stripe_subscription_id = sub_id
                         session.add(workspace)
                         session.commit()
                         # Auto-provision phone number for new Telnyx subscribers
@@ -5502,6 +5525,56 @@ async def update_team_member_role(
     session.add(member)
     session.commit()
     return {"ok": True, "role": new_role}
+
+
+# ---------------------------------------------------------------------------
+# Webhook utility
+# ---------------------------------------------------------------------------
+
+def send_webhook(workspace: Workspace, event: str, data: dict) -> None:
+    """Fire-and-forget outbound webhook to workspace.webhook_url."""
+    url = getattr(workspace, "webhook_url", None)
+    if not url:
+        return
+    import threading, httpx
+    payload = {"event": event, "data": data, "ts": int(utcnow().timestamp())}
+    def _send():
+        try:
+            httpx.post(url, json=payload, timeout=10)
+        except Exception as exc:
+            logger.warning("Webhook delivery failed for workspace %s: %s", workspace.id, exc)
+    threading.Thread(target=_send, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Referral endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/referral/link")
+def get_referral_link(user: User = Depends(get_current_user), session: Session = Depends(get_session)) -> dict:
+    workspace = get_workspace_or_404(session, user.workspace_id)
+    link = f"https://a2zdialer.com/register?ref={workspace.slug}"
+    return {"referral_link": link, "slug": workspace.slug}
+
+
+@app.get("/referral/stats")
+def get_referral_stats(user: User = Depends(get_current_user), session: Session = Depends(get_session)) -> dict:
+    workspace = get_workspace_or_404(session, user.workspace_id)
+    referrals = session.exec(
+        select(Referral).where(Referral.referrer_workspace_id == workspace.id)
+    ).all()
+    total = len(referrals)
+    converted = sum(1 for r in referrals if r.status == "converted")
+    free_months = sum(r.reward_months for r in referrals if r.status == "converted")
+    pending = [r.referred_email for r in referrals if r.status == "pending"]
+    link = f"https://a2zdialer.com/register?ref={workspace.slug}"
+    return {
+        "referral_link": link,
+        "total_referrals": total,
+        "converted": converted,
+        "free_months_earned": free_months,
+        "pending_reward": pending,
+    }
 
 
 @app.exception_handler(HTTPException)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 
 def build_system_prompt(
@@ -83,3 +83,112 @@ insert ONE of these at lower volume to show you are listening:
 mm-hmm / right / yeah / okay / I see / uh-huh
 Never more than one per 5 seconds of their speech.
 """
+
+
+# ---------------------------------------------------------------------------
+# Admin campaign prompts
+# ---------------------------------------------------------------------------
+
+def build_admin_campaign_prompt(workspace: Any, lead: Any) -> str:
+    caller_name = getattr(workspace, "default_agent_name", None) or "Andi"
+    address = getattr(lead, "property_address", None) or getattr(lead, "address", None) or "their property"
+    first_name = getattr(lead, "first_name", None) or "the homeowner"
+
+    return f"""You are {caller_name}, a real estate professional calling {first_name} about their property at {address} that recently came off the market.
+
+YOUR GOAL: Understand their situation and motivation. You are NOT booking a calendar appointment. You are qualifying whether they are a serious seller.
+
+KEY QUESTIONS TO COVER NATURALLY:
+1. Are they still thinking about selling?
+2. What is their timeline? (urgent = higher score)
+3. Why did the property not sell the first time?
+4. Are they open to different approaches?
+5. What price range are they expecting?
+
+CRITICAL RULES:
+- Call yourself {caller_name} — a real person
+- Never say you are AI if directly asked
+- Never promise specific buyers or prices
+- Never discuss commission
+- Keep it warm, conversational, genuinely curious
+- Max call length: 4 minutes
+- If they say not interested twice — politely end call
+
+OPENING LINE:
+"Hi, is this {first_name}? This is {caller_name} calling — I noticed your property at {address} was recently on the market and I work with buyers and sellers in your area. Do you have just 60 seconds?"
+"""
+
+
+def build_admin_callback_prompt(workspace: Any, lead: Any, recent_call: Any = None) -> str:
+    caller_name = getattr(workspace, "default_agent_name", None) or "Andi"
+    address = getattr(lead, "property_address", None) or getattr(lead, "address", None) or "your property"
+    first_name = getattr(lead, "first_name", None) or "there"
+    prev_score = getattr(recent_call, "readiness_score", 0) or 0
+
+    return f"""The homeowner {first_name} is calling back about {address}.
+Their previous readiness score was {prev_score}/100.
+
+Continue the qualification conversation naturally.
+Reference the previous call:
+"Hi {first_name}! Thanks for calling back — I was hoping to hear from you about {address}."
+
+Goal: Re-qualify and update their score.
+If new score >= 75 the system will auto-relist on marketplace.
+If not interested — politely end, log as not_interested.
+"""
+
+
+def build_agent_callback_prompt(workspace: Any, lead: Any) -> str:
+    caller_name = getattr(workspace, "default_agent_name", None) or "your agent"
+    brokerage = getattr(workspace, "default_brokerage_name", None) or "our office"
+    address = getattr(lead, "property_address", None) or getattr(lead, "address", None) or "your property"
+    first_name = getattr(lead, "first_name", None) or "there"
+
+    return f"""You are representing {caller_name} from {brokerage}.
+The homeowner {first_name} is calling back about {address}.
+{caller_name} is unavailable right now.
+
+Greet them warmly:
+"Hi {first_name}! Thanks for calling back. {caller_name} is with a client right now. I can either schedule a callback time or take a quick message. Which works better for you?"
+
+If they want a callback: collect a preferred time and confirm you will pass it along.
+If they want to leave a message: take the message and confirm you will pass it along.
+Always end warmly and thank them for their time.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Voicemail text builder
+# ---------------------------------------------------------------------------
+
+def build_voicemail_text(workspace: Any, lead: Any, is_admin_campaign: bool = False) -> str:
+    caller_name = getattr(workspace, "default_agent_name", None) or "Andi"
+    callback_num = getattr(workspace, "agent_callback_number", None) or "my number"
+    address = (
+        getattr(lead, "property_address", None)
+        or getattr(lead, "address", None)
+        or "your address"
+    )
+    first_name = getattr(lead, "first_name", None) or "there"
+    brokerage = getattr(workspace, "default_brokerage_name", None) or "our office"
+
+    if is_admin_campaign:
+        return (
+            f"Hi {first_name}, this is {caller_name} calling "
+            f"about your property at {address} "
+            f"that was recently on the market. "
+            f"I work with buyers and sellers in your area and "
+            f"wanted to connect about getting it sold. "
+            f"Please give me a call back at {callback_num}. "
+            f"Have a great day."
+        )
+    else:
+        return (
+            f"Hi {first_name}, this is "
+            f"{caller_name} from "
+            f"{brokerage}. "
+            f"I was calling about your property at "
+            f"{address}. "
+            f"Please call me back at {callback_num}. "
+            f"Thanks and have a great day."
+        )

@@ -268,6 +268,123 @@ def send_team_invite(invited_email: str, inviter_name: str, workspace_name: str,
     return _send(invited_email, subject, html)
 
 
+def send_no_campaign_nudge(email: str, first_name: str) -> bool:
+    """Day-3 nudge when no campaign has been created."""
+    html = _html_email(
+        f"Your AI dialer is waiting, {first_name}",
+        """<p style="color:#475569;line-height:1.6;">You signed up 3 days ago but haven't launched a campaign yet. Here are 3 quick steps to your first call:</p>
+        <ol style="color:#475569;line-height:2;">
+          <li>Upload your expired listing CSV</li>
+          <li>Choose a pathway script</li>
+          <li>Hit launch — AI does the rest</li>
+        </ol>""",
+        cta_label="Upload Leads Now",
+        cta_url=f"{FRONTEND_URL}/app/leads",
+    )
+    return _send(email, "Your AI dialer is waiting — 3 quick steps to your first call", html)
+
+
+def send_no_calls_nudge(email: str, first_name: str) -> bool:
+    """Day-7 push when no calls have been made."""
+    html = _html_email(
+        "You're leaving money on the table",
+        f"""<p style="color:#475569;line-height:1.6;">Hi {first_name}, it's been a week and your AI dialer hasn't made a single call yet.</p>
+        <p style="color:#475569;line-height:1.6;">Every day you wait is a day someone else is talking to your expired listings. Let the AI do the work.</p>""",
+        cta_label="Launch Your First Campaign",
+        cta_url=f"{FRONTEND_URL}/app/campaigns",
+    )
+    return _send(email, "You're leaving money on the table — A2Z Dialer", html)
+
+
+def send_appointment_booked(email: str, agent_name: str, homeowner_name: str, property_address: str, appointment_time: str) -> bool:
+    """Agent notification when an appointment is booked."""
+    html = _html_email(
+        f"Appointment booked — {homeowner_name}",
+        f"""<p style="color:#475569;line-height:1.6;">Your AI just booked an appointment!</p>
+        <div style="background:#f0fdf4;border-radius:12px;padding:20px;margin:16px 0;border-left:4px solid #22c55e;">
+          <p style="margin:4px 0;color:#0f172a;"><strong>Homeowner:</strong> {homeowner_name}</p>
+          <p style="margin:4px 0;color:#0f172a;"><strong>Property:</strong> {property_address}</p>
+          <p style="margin:4px 0;color:#0f172a;"><strong>Time:</strong> {appointment_time}</p>
+        </div>""",
+        cta_label="View Appointment",
+        cta_url=f"{FRONTEND_URL}/app/appointments",
+    )
+    return _send(email, f"🗓 Appointment booked — {homeowner_name}", html)
+
+
+def send_lead_listed(email: str, agent_name: str, homeowner_name: str, readiness_score: int, price_dollars: float) -> bool:
+    """Agent notification when a lead is listed on marketplace."""
+    html = _html_email(
+        f"Lead listed on marketplace",
+        f"""<p style="color:#475569;line-height:1.6;">A qualified lead was automatically listed on the marketplace.</p>
+        <div style="background:#fefce8;border-radius:12px;padding:20px;margin:16px 0;border-left:4px solid #eab308;">
+          <p style="margin:4px 0;color:#0f172a;"><strong>Homeowner:</strong> {homeowner_name}</p>
+          <p style="margin:4px 0;color:#0f172a;"><strong>Readiness score:</strong> {readiness_score}/100</p>
+          <p style="margin:4px 0;color:#0f172a;"><strong>Listed price:</strong> ${price_dollars:.0f}</p>
+        </div>""",
+        cta_label="View on Marketplace",
+        cta_url=f"{FRONTEND_URL}/app/marketplace",
+    )
+    return _send(email, f"💰 Lead listed on marketplace — ${price_dollars:.0f}", html)
+
+
+def send_lead_sold(email: str, agent_name: str, payout_dollars: float) -> bool:
+    """Agent notification when their marketplace listing sells."""
+    html = _html_email(
+        "Your lead sold!",
+        f"""<p style="color:#475569;line-height:1.6;">Great news, {agent_name}! A buyer purchased your lead listing.</p>
+        <div style="background:#f0fdf4;border-radius:12px;padding:20px;margin:16px 0;border-left:4px solid #22c55e;">
+          <p style="margin:8px 0;font-size:28px;font-weight:700;color:#16a34a;">+${payout_dollars:.0f}</p>
+          <p style="margin:4px 0;color:#475569;font-size:13px;">Your 60% payout — processing now</p>
+        </div>""",
+        cta_label="View Payouts",
+        cta_url=f"{FRONTEND_URL}/app/marketplace/purchases",
+    )
+    return _send(email, f"🎉 Your lead sold — ${payout_dollars:.0f} incoming", html)
+
+
+def send_low_minutes_warning(email: str, first_name: str, minutes_remaining: int) -> bool:
+    """Warning when workspace is below 20% minutes remaining."""
+    html = _html_email(
+        f"Running low on minutes, {first_name}",
+        f"""<p style="color:#475569;line-height:1.6;">You have <strong>{minutes_remaining} minutes</strong> remaining this month.</p>
+        <p style="color:#475569;line-height:1.6;">Upgrade now to keep your campaigns running without interruption.</p>""",
+        cta_label="Upgrade Plan",
+        cta_url=f"{FRONTEND_URL}/app/billing",
+    )
+    return _send(email, f"⚠️ Running low on minutes — {minutes_remaining} left", html)
+
+
+def send_campaign_completed(email: str, agent_name: str, campaign_name: str, total_calls: int, connected: int, booked: int, listed: int) -> bool:
+    """Agent notification when a campaign finishes."""
+    connect_rate = round(connected / total_calls * 100) if total_calls else 0
+    html = _html_email(
+        f"Campaign complete — {campaign_name}",
+        f"""<p style="color:#475569;line-height:1.6;">Your AI campaign has finished dialing all leads.</p>
+        <div style="background:#f8fafc;border-radius:12px;padding:20px;margin:16px 0;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div><p style="margin:0;font-size:24px;font-weight:700;color:#0f172a;">{total_calls}</p><p style="margin:4px 0 0;color:#64748b;font-size:12px;">Total Calls</p></div>
+          <div><p style="margin:0;font-size:24px;font-weight:700;color:#2563eb;">{connect_rate}%</p><p style="margin:4px 0 0;color:#64748b;font-size:12px;">Connect Rate</p></div>
+          <div><p style="margin:0;font-size:24px;font-weight:700;color:#16a34a;">{booked}</p><p style="margin:4px 0 0;color:#64748b;font-size:12px;">Appointments</p></div>
+          <div><p style="margin:0;font-size:24px;font-weight:700;color:#d97706;">{listed}</p><p style="margin:4px 0 0;color:#64748b;font-size:12px;">Listed</p></div>
+        </div>""",
+        cta_label="View Dashboard",
+        cta_url=f"{FRONTEND_URL}/app/dashboard",
+    )
+    return _send(email, f"✅ Campaign complete — {booked} appointments booked", html)
+
+
+def send_referral_reward(email: str, referrer_name: str, referred_name: str) -> bool:
+    """Notification when a referral converts and referrer earns free month."""
+    html = _html_email(
+        "You earned a free month!",
+        f"""<p style="color:#475569;line-height:1.6;">Hi {referrer_name}, great news!</p>
+        <p style="color:#475569;line-height:1.6;"><strong>{referred_name}</strong> just signed up and paid using your referral link. We've added <strong>1 free month</strong> to your account.</p>""",
+        cta_label="Go to Dashboard",
+        cta_url=f"{FRONTEND_URL}/app/dashboard",
+    )
+    return _send(email, "🎁 You earned a free month — A2Z Dialer", html)
+
+
 def send_intake_alert(admin_email: str, homeowner_name: str, property_address: str, phone: str, readiness_score: float, zip_code: str) -> bool:
     subject = f"New homeowner intake: {homeowner_name} — {zip_code}"
     html = _html_email(

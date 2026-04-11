@@ -147,6 +147,11 @@ class WorkspaceSettingsUpdateIn(BaseModel):
     preferred_voice_gender: Optional[str] = None
     is_admin_workspace: Optional[bool] = None
     agent_callback_number: Optional[str] = None
+    webhook_url: Optional[str] = None
+    name: Optional[str] = None
+    default_agent_name: Optional[str] = None
+    default_brokerage_name: Optional[str] = None
+    default_caller_title: Optional[str] = None
 
 
 class DashboardKpiOut(BaseModel):
