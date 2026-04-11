@@ -80,6 +80,9 @@ class Workspace(Timestamped, table=True):
     preferred_voice_gender: Optional[str] = Field(default=None, max_length=50)
     is_admin_workspace: bool = Field(default=False)
 
+    # Callback forwarding: when homeowners call back, forward to this number
+    agent_callback_number: Optional[str] = Field(default=None, max_length=20)
+
 
 class User(Timestamped, table=True):
     __tablename__ = "users"

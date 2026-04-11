@@ -20,6 +20,17 @@ BASE_URL = os.getenv("BASE_URL", "https://your-domain.com")
 
 TELNYX_BASE = "https://api.telnyx.com/v2"
 
+# Ambient sound during AI processing gaps (subtle office background noise)
+# Telnyx Call Control API supports play_audio action on active calls.
+AMBIENT_ENABLED = True
+AMBIENT_TYPE = "office"
+AMBIENT_VOLUME = 0.05
+# Publicly accessible low-volume ambient audio URL (subtle office murmur)
+AMBIENT_AUDIO_URL = os.getenv(
+    "AMBIENT_AUDIO_URL",
+    "https://cdn.a2zdialer.com/ambient/office_murmur_low.mp3",
+)
+
 
 def _headers() -> dict:
     return {
@@ -310,6 +321,225 @@ def purchase_phone_number(phone_number: str) -> dict:
         return {"ok": False, "error": resp.text[:300]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def play_audio(call_control_id: str, audio_url: str, loop: bool = False) -> dict:
+    """Plays an audio file on an active Telnyx call.
+
+    Uses the Telnyx Call Control play_audio action.
+    Can be used for ambient sound during AI processing gaps.
+    """
+    if not TELNYX_API_KEY:
+        return {"ok": False, "error": "TELNYX_API_KEY not configured"}
+    try:
+        payload: dict = {
+            "audio_url": audio_url,
+            "loop": "infinity" if loop else "0",
+            "overlay": True,  # Mix with existing audio (don't replace)
+        }
+        resp = requests.post(
+            f"{TELNYX_BASE}/calls/{call_control_id}/actions/playback_start",
+            headers=_headers(),
+            json=payload,
+            timeout=10,
+        )
+        return {"ok": resp.status_code in (200, 201)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def stop_audio(call_control_id: str) -> dict:
+    """Stops audio playback on an active Telnyx call."""
+    if not TELNYX_API_KEY:
+        return {"ok": False, "error": "TELNYX_API_KEY not configured"}
+    try:
+        resp = requests.post(
+            f"{TELNYX_BASE}/calls/{call_control_id}/actions/playback_stop",
+            headers=_headers(),
+            json={},
+            timeout=10,
+        )
+        return {"ok": resp.status_code in (200, 201)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def play_ambient_sound(call_control_id: str) -> dict:
+    """Plays subtle ambient office sound during AI processing gaps.
+
+    Only plays if AMBIENT_ENABLED is True. Uses overlay mode so it mixes
+    with any existing call audio without replacing it.
+    """
+    if not AMBIENT_ENABLED:
+        return {"ok": False, "error": "Ambient sound disabled"}
+    if not AMBIENT_AUDIO_URL or "cdn.a2zdialer.com" in AMBIENT_AUDIO_URL:
+        # URL not configured — skip silently to avoid 404 errors
+        return {"ok": False, "error": "Ambient audio URL not configured"}
+    return play_audio(call_control_id, AMBIENT_AUDIO_URL, loop=False)
+
+
+async def handle_voicemail(
+    call_control_id: str,
+    lead_phone: str,
+    agent_name: str,
+    brokerage_name: str,
+    property_address: Optional[str],
+    callback_number: str,
+    calllog_id: Optional[int] = None,
+) -> dict:
+    """Leave a personalized voicemail via TTS + Telnyx play_audio.
+
+    Flow:
+    1. Build personalized voicemail text
+    2. Generate TTS audio via Cartesia
+    3. Upload/serve the audio (or use a pre-generated URL)
+    4. Play audio on the call via Telnyx play_audio
+    5. Hang up after playing
+    6. Log disposition as "voicemail"
+    """
+    import asyncio as _asyncio
+
+    addr_phrase = f"about your property at {property_address}" if property_address else "about your home"
+    voicemail_text = (
+        f"Hi, this is {agent_name} calling from {brokerage_name} {addr_phrase}. "
+        f"I'd love to connect with you about the real estate market in your area. "
+        f"Please give me a call back at {callback_number}. "
+        f"Again, that's {agent_name} from {brokerage_name}. Thanks, talk soon."
+    )
+
+    logger.info(
+        f"Leaving voicemail on call_control_id={call_control_id} | "
+        f"lead_phone={lead_phone} | calllog={calllog_id}"
+    )
+
+    # Try to generate TTS via Cartesia and get a playable URL
+    # For now, use Telnyx speak action as fallback (no external URL needed)
+    try:
+        speak_result = _telnyx_speak(call_control_id, voicemail_text)
+        if speak_result.get("ok"):
+            # Wait for speech to finish (estimate based on text length)
+            est_duration = max(len(voicemail_text) / 15, 5)  # ~15 chars/sec
+            await _asyncio.sleep(est_duration + 1.0)
+    except Exception as exc:
+        logger.error(f"Voicemail TTS failed: {exc}")
+
+    # Hang up after voicemail
+    hangup_call(call_control_id)
+
+    # Update calllog disposition
+    if calllog_id:
+        try:
+            from db import session_scope
+            from models import CallLog
+            with session_scope() as session:
+                calllog = session.get(CallLog, calllog_id)
+                if calllog:
+                    calllog.disposition = "voicemail"
+                    calllog.status = "completed"
+                    session.add(calllog)
+                    session.commit()
+        except Exception as exc:
+            logger.error(f"Failed to update calllog disposition for voicemail: {exc}")
+
+    return {"ok": True, "action": "voicemail_left"}
+
+
+def _telnyx_speak(call_control_id: str, text: str, voice: str = "Polly.Joanna") -> dict:
+    """Use Telnyx speak action for TTS on an active call."""
+    try:
+        resp = requests.post(
+            f"{TELNYX_BASE}/calls/{call_control_id}/actions/speak",
+            headers=_headers(),
+            json={
+                "payload": text,
+                "voice": voice,
+                "language": "en-US",
+            },
+            timeout=10,
+        )
+        return {"ok": resp.status_code in (200, 201)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def handle_voicemail_detection(
+    call_control_id: str,
+    detection_result: str,
+    lead_phone: str,
+    agent_name: str = "Alex",
+    brokerage_name: str = "your brokerage",
+    property_address: Optional[str] = None,
+    callback_number: str = "",
+    calllog_id: Optional[int] = None,
+) -> dict:
+    """Triggered when Telnyx sends call.machine.detection.ended with result 'machine'.
+
+    Dispatches voicemail handling for machine-answered calls.
+    """
+    machine_results = {
+        "machine_start", "machine_end_beep",
+        "machine_end_silence", "machine_end_other", "fax"
+    }
+
+    if detection_result not in machine_results:
+        return {"ok": True, "action": "human_answered", "result": detection_result}
+
+    logger.info(
+        f"AMD: machine detected (result={detection_result}) on call_control_id={call_control_id}"
+    )
+
+    if detection_result in ("machine_end_beep",) and callback_number:
+        # Best moment to leave voicemail — after the beep
+        return await handle_voicemail(
+            call_control_id=call_control_id,
+            lead_phone=lead_phone,
+            agent_name=agent_name,
+            brokerage_name=brokerage_name,
+            property_address=property_address,
+            callback_number=callback_number,
+            calllog_id=calllog_id,
+        )
+    else:
+        # For machine_start, fax, etc. — just hang up
+        hangup_call(call_control_id)
+        if calllog_id:
+            try:
+                from db import session_scope
+                from models import CallLog
+                with session_scope() as session:
+                    calllog = session.get(CallLog, calllog_id)
+                    if calllog:
+                        calllog.disposition = "voicemail"
+                        calllog.status = "no_answer"
+                        session.add(calllog)
+                        session.commit()
+            except Exception as exc:
+                logger.error(f"Failed to update calllog for voicemail hangup: {exc}")
+        return {"ok": True, "action": "voicemail_hangup"}
+
+
+def get_outbound_caller_id(workspace: Any, lead: Optional[Any] = None) -> str:
+    """Determine the outbound caller ID for a call.
+
+    Preference order:
+    1. Agent's verified callback number (if set on workspace)
+       Note: For Telnyx, the number must be verified/purchased in your account.
+       The agent's personal mobile cannot be used unless verified with Telnyx.
+    2. Workspace provisioned Telnyx number (twilio_from_number field)
+    3. Global TELNYX_FROM_NUMBER env fallback
+
+    IMPORTANT: Telnyx requires that the from_number be either:
+    - A number purchased/ported into your Telnyx account, OR
+    - A verified outbound caller ID (requires verification call/PIN process)
+    Using an unverified number will cause calls to fail with a 403.
+    """
+    agent_callback = getattr(workspace, 'agent_callback_number', None)
+    if agent_callback:
+        logger.info(
+            "Using agent callback number as caller ID — ensure it is Telnyx-verified"
+        )
+        return agent_callback
+    return getattr(workspace, 'twilio_from_number', None) or TELNYX_FROM_NUMBER
 
 
 def auto_provision_number(

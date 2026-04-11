@@ -146,6 +146,7 @@ class WorkspaceSettingsUpdateIn(BaseModel):
     preferred_voice_id: Optional[str] = None
     preferred_voice_gender: Optional[str] = None
     is_admin_workspace: Optional[bool] = None
+    agent_callback_number: Optional[str] = None
 
 
 class DashboardKpiOut(BaseModel):

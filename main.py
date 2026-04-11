@@ -3177,6 +3177,105 @@ async def telnyx_events(
     calllog_id: int | None = client_state.get("calllog_id")
     calllog = session.get(CallLog, calllog_id) if calllog_id else None
 
+    # ── Inbound callback handling ──────────────────────────────────────────
+    # When event is call.initiated with direction "inbound", a homeowner is
+    # calling back after receiving an AI call. Look up the agent who last
+    # called them and forward or let AI handle.
+    if event_type == "call.initiated":
+        direction = call_payload.get("direction", "")
+        if direction == "inbound":
+            from_number = call_payload.get("from", {})
+            if isinstance(from_number, dict):
+                caller_phone = from_number.get("phone_number", "")
+            else:
+                caller_phone = str(from_number)
+
+            logger.info(f"Inbound callback from {caller_phone} — looking up last agent call")
+
+            # Find most recent outbound CallLog to this number
+            recent_calllog = session.exec(
+                select(CallLog)
+                .where(CallLog.to_number == caller_phone)
+                .where(CallLog.direction == "outbound")
+                .order_by(CallLog.created_at.desc())
+            ).first()
+
+            workspace_for_callback: Optional[Workspace] = None
+            lead_for_callback: Optional[Lead] = None
+
+            if recent_calllog:
+                workspace_for_callback = session.get(Workspace, recent_calllog.workspace_id)
+                if recent_calllog.lead_id:
+                    lead_for_callback = session.get(Lead, recent_calllog.lead_id)
+
+            if workspace_for_callback:
+                callback_number = getattr(workspace_for_callback, 'agent_callback_number', None)
+                agent_name = workspace_for_callback.default_agent_name or "Alex"
+                brokerage = workspace_for_callback.default_brokerage_name or "our brokerage"
+
+                if callback_number:
+                    # Transfer inbound call to agent's callback number
+                    logger.info(
+                        f"Inbound callback from {caller_phone} — forwarding to agent at {callback_number}"
+                    )
+                    from telnyx_voice import transfer_call  # type: ignore
+                    transfer_call(call_control_id, callback_number)
+
+                    # SMS alert to agent
+                    try:
+                        from notifications import send_sms  # type: ignore
+                        homeowner_name = ""
+                        if lead_for_callback:
+                            homeowner_name = (
+                                lead_for_callback.homeowner_name
+                                or f"{lead_for_callback.first_name or ''} {lead_for_callback.last_name or ''}".strip()
+                            )
+                        sms_body = (
+                            f"A2Z Dialer: {homeowner_name or 'A homeowner'} is calling back "
+                            f"({caller_phone}). Transferring now."
+                        )
+                        send_sms(callback_number, sms_body)
+                    except Exception as sms_exc:
+                        logger.warning(f"SMS alert for callback failed: {sms_exc}")
+                else:
+                    # No callback number configured — AI answers with greeting
+                    logger.info(
+                        f"Inbound callback from {caller_phone} — no callback number, AI handling"
+                    )
+                    from telnyx_voice import _telnyx_speak  # type: ignore
+                    greeting = (
+                        f"Hi there, this is {agent_name} from {brokerage}. "
+                        "Thanks for calling back! I'm available to chat. "
+                        "How can I help you today?"
+                    )
+                    _telnyx_speak(call_control_id, greeting)
+
+                # Log inbound callback
+                inbound_log = CallLog(
+                    workspace_id=workspace_for_callback.id,
+                    campaign_id=recent_calllog.campaign_id if recent_calllog else None,
+                    lead_id=recent_calllog.lead_id if recent_calllog else None,
+                    pathway_id=recent_calllog.pathway_id if recent_calllog else None,
+                    from_number=caller_phone,
+                    to_number=call_payload.get("to", {}).get("phone_number", "") if isinstance(call_payload.get("to"), dict) else str(call_payload.get("to", "")),
+                    status="initiated",
+                    disposition="inbound_callback",
+                    direction="inbound",
+                    current_node=None,
+                    transcript="",
+                    route_trace="[]",
+                    extracted_json="{}",
+                    notes=f"Inbound callback from homeowner. Forwarded to {callback_number or 'AI'}.",
+                    provider_json="{}",
+                    latency_json="{}",
+                )
+                session.add(inbound_log)
+                session.commit()
+
+            return {"ok": True, "event": "inbound_callback_handled"}
+
+    # ── Outbound call events ───────────────────────────────────────────────
+
     if event_type == "call.answered":
         if calllog:
             calllog.answered_at = datetime.now(timezone.utc)
@@ -3204,17 +3303,27 @@ async def telnyx_events(
                     session.commit()
 
     elif event_type == "call.machine.detection.ended":
-        result = call_payload.get("result", "")
-        if result in ("machine_start", "machine_end_beep", "machine_end_silence",
+        detection_result = call_payload.get("result", "")
+        if detection_result in ("machine_start", "machine_end_beep", "machine_end_silence",
                       "machine_end_other", "fax") and call_control_id:
-            from telnyx_voice import hangup_call  # type: ignore
-            hangup_call(call_control_id)
-            if calllog:
-                calllog.status = "no_answer"
-                calllog.disposition = "voicemail"
-                touch(calllog)
-                session.add(calllog)
-                session.commit()
+            # Use enhanced voicemail handler
+            from telnyx_voice import handle_voicemail_detection  # type: ignore
+            workspace_for_vm = session.get(Workspace, calllog.workspace_id) if calllog else None
+            lead_for_vm = session.get(Lead, calllog.lead_id) if calllog and calllog.lead_id else None
+
+            import asyncio as _asyncio
+            _asyncio.create_task(
+                handle_voicemail_detection(
+                    call_control_id=call_control_id,
+                    detection_result=detection_result,
+                    lead_phone=calllog.to_number if calllog else "",
+                    agent_name=workspace_for_vm.default_agent_name if workspace_for_vm else "Alex",
+                    brokerage_name=workspace_for_vm.default_brokerage_name if workspace_for_vm else "your brokerage",
+                    property_address=lead_for_vm.property_address if lead_for_vm else None,
+                    callback_number=getattr(workspace_for_vm, 'agent_callback_number', '') or "" if workspace_for_vm else "",
+                    calllog_id=calllog_id,
+                )
+            )
 
     return {"ok": True}
 

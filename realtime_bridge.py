@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 # Default response delay after VAD end-of-speech before processing (ms)
 RESPONSE_DELAY_MS = 350
 
+# Greeting wait: hold AI speech until homeowner greets (avoids robotic instant-speak)
+WAIT_FOR_GREETING = True
+GREETING_WAIT_MS = 1000     # wait 1s after connect before speaking
+GREETING_TIMEOUT_MS = 3000  # if no greeting in 3s, AI starts anyway
+
 # ---------------------------------------------------------------------------
 # Agent persona prompt template
 # ---------------------------------------------------------------------------
@@ -131,6 +136,10 @@ class RealtimeBridge:
         # Barge-in / AI speaking state
         self._ai_speaking: bool = False
         self._ai_cancel_requested: bool = False
+
+        # Greeting wait: track whether homeowner has greeted before AI speaks
+        self._greeting_received: bool = False
+        self._greeting_wait_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
 
         # Current node tracking for transcript
         self.current_node_id: Optional[str] = None
@@ -381,6 +390,61 @@ class RealtimeBridge:
             "voice": settings.openai_realtime_voice if self.voice_mode == "realtime" else settings.elevenlabs_voice_id,
             "text": (text or "").strip(),
         }
+
+    # ------------------------------------------------------------------
+    # Greeting wait (avoids robotic instant-speak on connect)
+    # ------------------------------------------------------------------
+
+    async def wait_for_greeting(self, on_ready: Optional[Any] = None) -> bool:
+        """Hold AI speech until homeowner greets, or until GREETING_TIMEOUT_MS.
+
+        Returns True if greeting was received, False if timed out.
+        Call this immediately after call.answered before AI speaks.
+
+        If WAIT_FOR_GREETING is False, returns immediately.
+        """
+        if not WAIT_FOR_GREETING:
+            if callable(on_ready):
+                await on_ready()
+            return False
+
+        # Brief mandatory delay regardless (natural connection pause)
+        await asyncio.sleep(GREETING_WAIT_MS / 1000.0)
+
+        if self._greeting_received:
+            if callable(on_ready):
+                await on_ready()
+            return True
+
+        # Wait up to timeout for homeowner to speak
+        timeout_remaining = (GREETING_TIMEOUT_MS - GREETING_WAIT_MS) / 1000.0
+        try:
+            await asyncio.wait_for(
+                self._wait_greeting_event(),
+                timeout=max(timeout_remaining, 0.1),
+            )
+            logger.info(
+                "Greeting received from homeowner | calllog=%s", self.calllog_id
+            )
+            if callable(on_ready):
+                await on_ready()
+            return True
+        except asyncio.TimeoutError:
+            logger.info(
+                "Greeting timeout — AI starting anyway | calllog=%s", self.calllog_id
+            )
+            if callable(on_ready):
+                await on_ready()
+            return False
+
+    async def _wait_greeting_event(self) -> None:
+        """Internal: poll until greeting received."""
+        while not self._greeting_received:
+            await asyncio.sleep(0.05)
+
+    def on_homeowner_greeting(self) -> None:
+        """Call this when any homeowner speech is detected after connect."""
+        self._greeting_received = True
 
     # ------------------------------------------------------------------
     # Barge-in handling (enhanced)

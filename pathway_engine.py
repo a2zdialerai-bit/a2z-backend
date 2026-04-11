@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import random
 import re
 from dataclasses import dataclass
@@ -8,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 
 JsonDict = Dict[str, Any]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -298,6 +302,145 @@ def get_pacing_mode(node: dict, emotional_state: str = "neutral") -> str:
         return "fast"
 
     return "normal"
+
+
+# ---------------------------------------------------------------------------
+# GPT bridge fallback (used only when pathway has no match)
+# ---------------------------------------------------------------------------
+
+def gpt_bridge_response(transcript: str, current_node: dict, context: dict) -> str:
+    """Generate a max 2-sentence bridge response via OpenAI when pathway routing has no match.
+
+    The bridge acknowledges the unexpected input and guides the conversation
+    back toward the pathway's core question (timeline to sell / motivation).
+
+    Only called when resolve_next_node() returns no next_node — the pathway
+    covers the expected flow. GPT is strictly a fallback, never freestyle.
+    """
+    openai_api_key = context.get("openai_api_key") or os.getenv("OPENAI_API_KEY", "")
+    if not openai_api_key:
+        logger.warning("gpt_bridge_response: no OpenAI API key available, using static fallback")
+        return "I hear you. So, just to circle back — what would your timeline look like if you did decide to make a move?"
+
+    node_prompt = current_node.get("prompt", "") if isinstance(current_node, dict) else ""
+    agent_name = context.get("agent_name", "Alex")
+    brokerage = context.get("brokerage_name", "our brokerage")
+
+    system_msg = (
+        f"You are {agent_name}, a real estate agent from {brokerage}. "
+        "Your job is to gently acknowledge an unexpected homeowner response and "
+        "guide the conversation back to asking about their timeline to sell. "
+        "STRICT RULES: respond in exactly 1-2 short sentences. "
+        "Sound natural and human. Never say 'Certainly', 'Absolutely', 'Great question'. "
+        "Never reveal you are AI. Always end by pivoting back to timeline or motivation."
+    )
+    user_msg = (
+        f"The homeowner said: \"{transcript}\"\n"
+        f"The current conversation node was asking: \"{node_prompt}\"\n"
+        "Generate a 1-2 sentence bridge that acknowledges their response and steers "
+        "back to discussing their timeline or motivation to sell."
+    )
+
+    try:
+        import httpx
+        response = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                "max_tokens": 80,
+                "temperature": 0.6,
+            },
+            timeout=8.0,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            bridge_text = data["choices"][0]["message"]["content"].strip()
+            logger.info(f"GPT bridge response generated: {bridge_text[:80]}...")
+            return bridge_text
+        else:
+            logger.error(f"OpenAI bridge error {response.status_code}: {response.text[:200]}")
+    except Exception as exc:
+        logger.error(f"GPT bridge exception: {exc}")
+
+    # Static fallback if OpenAI fails
+    return "I hear you on that. So what would your timeline look like if the right opportunity came along?"
+
+
+def get_next_ai_response(
+    transcript: str,
+    current_node: str,
+    pathway_obj: dict,
+    context: dict,
+) -> dict:
+    """Pathway-enforced AI response router.
+
+    STRICT RULE: The AI never freestyles. Every response either:
+    1. Comes from a matched pathway node (preferred), OR
+    2. Uses a GPT bridge (max 2 sentences) to acknowledge + return to pathway
+
+    Args:
+        transcript: What the homeowner just said.
+        current_node: ID of the current pathway node.
+        pathway_obj: The full pathway JSON object.
+        context: Dict with flags, extracted fields, agent_name, etc.
+
+    Returns:
+        {
+            "type": "pathway" | "bridge",
+            "prompt": str,           # what the AI should say
+            "next_node": str | None, # next node ID (None for bridge)
+            "decision": RouteDecision | None,
+        }
+    """
+    flags = context.get("flags", context)  # accept either flags-only or full context
+
+    # Step 1: Try pathway match
+    try:
+        decision = resolve_next_node(pathway_obj, current_node, flags, user_reply=transcript)
+        if decision.next_node:
+            # Get next node's prompt rendered with context
+            try:
+                next_node_obj = get_node(pathway_obj, decision.next_node)
+                next_prompt = render_prompt(next_node_obj.get("prompt", ""), flags)
+            except KeyError:
+                next_prompt = decision.prompt
+
+            logger.info(
+                f"Pathway match: {current_node} -> {decision.next_node} "
+                f"(route: {decision.fired_route})"
+            )
+            return {
+                "type": "pathway",
+                "prompt": next_prompt,
+                "next_node": decision.next_node,
+                "decision": decision,
+            }
+    except Exception as exc:
+        logger.error(f"Pathway resolve error at node {current_node}: {exc}")
+
+    # Step 2: GPT bridge (only if truly no pathway match)
+    logger.info(f"No pathway match at node {current_node} — using GPT bridge")
+    current_node_obj = {}
+    try:
+        current_node_obj = get_node(pathway_obj, current_node)
+    except KeyError:
+        pass
+
+    bridge_prompt = gpt_bridge_response(transcript, current_node_obj, context)
+    return {
+        "type": "bridge",
+        "prompt": bridge_prompt,
+        "next_node": None,
+        "decision": None,
+    }
 
 
 # ---------------------------------------------------------------------------
